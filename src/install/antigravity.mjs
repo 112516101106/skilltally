@@ -88,7 +88,7 @@ export function installAntigravity({
 
     writeJsonAtomic(join(target, 'hooks.json'), buildAntigravityHooksJson(), 0o644);
 
-    let version = '1.0.0';
+    let version = '1.0.1';
     try {
       version = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).version || version;
     } catch {}

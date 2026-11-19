@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-19
+
+### Fixed
+- Ignore third-party hooks in `skilltally doctor` when inspecting `~/.codex/hooks.json`, `~/.claude/settings.json`, `~/.gemini/settings.json`, and `~/.gemini/config/hooks.json` instead of flagging unrelated commands as broken paths.
+- Match the exact `[hooks.state."...hooks.json:post_tool_use:<group>:<handler>"]` index in `~/.codex/config.toml` when checking Codex hook trust so third-party hooks at index `0:0` do not produce false positives.
+
 ## [1.0.0] - 2026-11-19
 
 ### Added

@@ -11,29 +11,36 @@ import { checkCodexHookTrust, detectCodex, hasCodexPluginInstalled } from './cod
 import { detectGemini } from './gemini.mjs';
 import { extractHookCommandPath, getPackageRoot, isSkilltallyHandler, readJsonObject } from './runtime.mjs';
 
-function collectSkilltallyHookCommands(hooksJsonObj) {
+function collectAntigravityHookCommands(hooksJsonObj) {
   const commands = [];
   if (!hooksJsonObj || typeof hooksJsonObj !== 'object') return commands;
 
-  // Antigravity root hooks.json style: { "<name>": { PostToolUse: [...] } }
-  for (const val of Object.values(hooksJsonObj)) {
-    if (val && typeof val === 'object' && Array.isArray(val.PostToolUse)) {
-      for (const group of val.PostToolUse) {
-        for (const h of group?.hooks || []) {
-          if (typeof h?.command === 'string') commands.push(h.command);
+  for (const [key, val] of Object.entries(hooksJsonObj)) {
+    if (key === 'hooks' || !val || typeof val !== 'object') continue;
+    if (!Array.isArray(val.PostToolUse)) continue;
+    for (const group of val.PostToolUse) {
+      for (const h of group?.hooks || []) {
+        if ((key === 'skilltally' || isSkilltallyHandler(h)) && typeof h?.command === 'string') {
+          commands.push(h.command);
         }
       }
     }
   }
 
-  // Claude / Codex / Gemini style: { hooks: { PostToolUse: [...], AfterTool: [...] } }
+  return commands;
+}
+
+function collectNestedHookCommands(hooksJsonObj) {
+  const commands = [];
+  if (!hooksJsonObj || typeof hooksJsonObj !== 'object') return commands;
+
   for (const eventName of ['PostToolUse', 'AfterTool']) {
-    if (Array.isArray(hooksJsonObj?.hooks?.[eventName])) {
-      for (const group of hooksJsonObj.hooks[eventName]) {
-        for (const h of group?.hooks || []) {
-          if (isSkilltallyHandler(h) && typeof h.command === 'string') {
-            commands.push(h.command);
-          }
+    const groups = hooksJsonObj?.hooks?.[eventName];
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      for (const h of group?.hooks || []) {
+        if (isSkilltallyHandler(h) && typeof h?.command === 'string') {
+          commands.push(h.command);
         }
       }
     }
@@ -146,14 +153,14 @@ export function runDoctor({
   let agyPluginCmds = [];
   if (agyPluginExists && existsSync(join(agyPluginDir, 'hooks.json'))) {
     try {
-      agyPluginCmds = collectSkilltallyHookCommands(readJsonObject(join(agyPluginDir, 'hooks.json')));
+      agyPluginCmds = collectAntigravityHookCommands(readJsonObject(join(agyPluginDir, 'hooks.json')));
     } catch {}
   }
   let agyGlobalCmds = [];
   const agyGlobalHooksPath = join(homeDir, '.gemini', 'config', 'hooks.json');
   if (existsSync(agyGlobalHooksPath)) {
     try {
-      agyGlobalCmds = collectSkilltallyHookCommands(readJsonObject(agyGlobalHooksPath));
+      agyGlobalCmds = collectAntigravityHookCommands(readJsonObject(agyGlobalHooksPath));
     } catch {}
   }
 
@@ -183,7 +190,7 @@ export function runDoctor({
   let claudeCmds = [];
   if (existsSync(claudeSettingsPath)) {
     try {
-      claudeCmds = collectSkilltallyHookCommands(readJsonObject(claudeSettingsPath));
+      claudeCmds = collectNestedHookCommands(readJsonObject(claudeSettingsPath));
     } catch {}
   }
   const claudeSettingsInstalled = claudeCmds.length > 0;
@@ -204,7 +211,7 @@ export function runDoctor({
   let codexCmds = [];
   if (existsSync(codexHooksPath)) {
     try {
-      codexCmds = collectSkilltallyHookCommands(readJsonObject(codexHooksPath));
+      codexCmds = collectNestedHookCommands(readJsonObject(codexHooksPath));
     } catch {}
   }
   const codexHooksInstalled = codexCmds.length > 0;
@@ -227,7 +234,7 @@ export function runDoctor({
   if (existsSync(geminiSettingsPath)) {
     try {
       const geminiDoc = readJsonObject(geminiSettingsPath);
-      geminiCmds = collectSkilltallyHookCommands(geminiDoc);
+      geminiCmds = collectNestedHookCommands(geminiDoc);
       geminiHooksDisabled = geminiDoc?.hooksConfig?.enabled === false;
     } catch {}
   }

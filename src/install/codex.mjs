@@ -56,20 +56,32 @@ export function hasCodexPluginInstalled(homeDir = homedir()) {
 }
 
 export function checkCodexHookTrust(homeDir = homedir()) {
-  const raw = readCodexToml(homeDir);
   const hooksPath = join(homeDir, '.codex', 'hooks.json');
-  let hasUserHook = false;
+  let userHookPos = null;
   try {
     const doc = readJsonObject(hooksPath);
-    for (const g of doc?.hooks?.PostToolUse || []) {
-      if (Array.isArray(g?.hooks) && g.hooks.some(isSkilltallyHandler)) {
-        hasUserHook = true;
-        break;
+    const groups = doc?.hooks?.PostToolUse || [];
+    for (let gi = 0; gi < groups.length && !userHookPos; gi++) {
+      const handlers = groups[gi]?.hooks;
+      if (!Array.isArray(handlers)) continue;
+      for (let hi = 0; hi < handlers.length; hi++) {
+        if (isSkilltallyHandler(handlers[hi])) {
+          userHookPos = { groupIdx: gi, handlerIdx: hi };
+          break;
+        }
       }
     }
   } catch {}
 
-  if (!raw) return hasUserHook ? 'untrusted' : 'unknown';
+  const hasPlugin = hasCodexPluginInstalled(homeDir);
+  if (!userHookPos && !hasPlugin) return 'unknown';
+
+  const raw = readCodexToml(homeDir);
+  if (!raw) return userHookPos ? 'untrusted' : 'unknown';
+
+  const exactHookKey = userHookPos
+    ? `hooks.json:post_tool_use:${userHookPos.groupIdx}:${userHookPos.handlerIdx}`
+    : null;
 
   let inRelevantState = false;
   let sawSection = false;
@@ -79,7 +91,11 @@ export function checkCodexHookTrust(homeDir = homedir()) {
     const trimmed = line.replace(/#.*$/, '').trim();
     if (!trimmed) continue;
     if (trimmed.startsWith('[')) {
-      if (/^\[hooks\.state\./.test(trimmed) && (trimmed.includes('skilltally') || trimmed.includes('hooks.json:post_tool_use'))) {
+      const matchesSkilltally = trimmed.includes('skilltally');
+      const matchesUserHook =
+        exactHookKey !== null &&
+        (trimmed.includes(exactHookKey) || /:hooks\.json:post_tool_use(?:"|'|])/.test(trimmed));
+      if (/^\[hooks\.state\./.test(trimmed) && (matchesSkilltally || matchesUserHook)) {
         inRelevantState = true;
         sawSection = true;
       } else {
@@ -93,7 +109,7 @@ export function checkCodexHookTrust(homeDir = homedir()) {
   }
 
   if (sawSection) return sawTrustedHash ? 'trusted' : 'untrusted';
-  return hasUserHook ? 'untrusted' : 'unknown';
+  return userHookPos ? 'untrusted' : 'unknown';
 }
 
 export function installCodex({

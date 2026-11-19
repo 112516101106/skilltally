@@ -278,3 +278,108 @@ test('Gemini CLI install/uninstall preserves settings, uses 5000ms AfterTool hoo
     rmSync(tmp, { recursive: true, force: true });
   }
 });
+
+test('runDoctor ignores third-party hooks and matches exact Codex post_tool_use trust index', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'skilltally-thirdparty-'));
+  const homeDir = join(tmp, 'home');
+  const dataHome = join(tmp, 'data');
+  try {
+    mkdirSync(join(homeDir, '.codex'), { recursive: true });
+    mkdirSync(join(homeDir, '.claude'), { recursive: true });
+    mkdirSync(join(homeDir, '.gemini', 'config'), { recursive: true });
+
+    writeFileSync(
+      join(homeDir, '.codex', 'hooks.json'),
+      JSON.stringify({
+        hooks: {
+          PostToolUse: [
+            {
+              matcher: '.*',
+              hooks: [{ type: 'command', command: 'node /nonexistent/third-party/codex-hook.mjs' }],
+            },
+          ],
+        },
+      })
+    );
+    const baseToml =
+      '[hooks.state."/Users/u/.codex/hooks.json:post_tool_use:0:0"]\ntrusted_hash = "sha256:thirdparty0"\n';
+    writeFileSync(join(homeDir, '.codex', 'config.toml'), baseToml);
+
+    writeFileSync(
+      join(homeDir, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          PostToolUse: [
+            {
+              matcher: '.*',
+              hooks: [{ type: 'command', command: 'node /nonexistent/third-party/claude-hook.mjs' }],
+            },
+          ],
+        },
+      })
+    );
+
+    writeFileSync(
+      join(homeDir, '.gemini', 'settings.json'),
+      JSON.stringify({
+        hooks: {
+          AfterTool: [
+            {
+              matcher: '.*',
+              hooks: [{ type: 'command', command: 'node /nonexistent/third-party/gemini-hook.mjs' }],
+            },
+          ],
+        },
+      })
+    );
+
+    writeFileSync(
+      join(homeDir, '.gemini', 'config', 'hooks.json'),
+      JSON.stringify({
+        'third-party-plugin': {
+          PostToolUse: [
+            {
+              matcher: '.*',
+              hooks: [{ type: 'command', command: '/nonexistent/third-party/agy-hook.sh' }],
+            },
+          ],
+        },
+      })
+    );
+
+    const before = runDoctor({ homeDir, dataHome, pkgRoot });
+    assert.equal(before.ok, true);
+    for (const host of ['antigravity', 'claude', 'codex', 'gemini']) {
+      assert.equal(before.hosts[host].installed, false);
+      assert.equal(before.hosts[host].hookPathValid, null);
+    }
+    assert.equal(before.hosts.codex.trustStatus, 'unknown');
+
+    const res = installCodex({ homeDir, dataHome, pkgRoot });
+    assert.equal(res.status, 'installed');
+
+    const codexSaved = JSON.parse(readFileSync(join(homeDir, '.codex', 'hooks.json'), 'utf8'));
+    assert.equal(codexSaved.hooks.PostToolUse.length, 2);
+
+    const afterInstall = runDoctor({ homeDir, dataHome, pkgRoot });
+    assert.equal(afterInstall.ok, true);
+    assert.equal(afterInstall.hosts.codex.installed, true);
+    assert.equal(afterInstall.hosts.codex.hookPathValid, true);
+    assert.equal(afterInstall.hosts.codex.trustStatus, 'untrusted');
+    for (const host of ['antigravity', 'claude', 'gemini']) {
+      assert.equal(afterInstall.hosts[host].installed, false);
+      assert.equal(afterInstall.hosts[host].hookPathValid, null);
+    }
+
+    writeFileSync(
+      join(homeDir, '.codex', 'config.toml'),
+      `${baseToml}\n[hooks.state."/Users/u/.codex/hooks.json:post_tool_use:1:0"]\ntrusted_hash = "sha256:skilltally1"\n`
+    );
+    assert.equal(checkCodexHookTrust(homeDir), 'trusted');
+
+    const afterTrust = runDoctor({ homeDir, dataHome, pkgRoot });
+    assert.equal(afterTrust.hosts.codex.trustStatus, 'trusted');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
