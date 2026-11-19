@@ -116,7 +116,7 @@ function normalizePath(p) {
   try {
     resolved = realpathSync(resolved);
   } catch {}
-  return resolved.replace(/\\/g, '/');
+  return resolved.replace(/\\+/g, '/');
 }
 
 function readAntigravityPluginStates(homeDir) {

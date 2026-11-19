@@ -80,7 +80,10 @@ test('bin/track.mjs swallows empty/corrupt stdin and logs debug when SKILLTALLY_
   }
 });
 
-test('hooks/agy-fast-track.sh fast-paths misses and forwards hits to track.mjs', () => {
+test(
+  'hooks/agy-fast-track.sh fast-paths misses and forwards hits to track.mjs',
+  { skip: process.platform === 'win32' },
+  () => {
   const home = makeTempHome();
   try {
     const missRes = spawnSync(fastTrack, [], {

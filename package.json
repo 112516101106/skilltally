@@ -1,6 +1,6 @@
 {
   "name": "skilltally",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "Real-time skill usage tracking via hooks for Antigravity, Claude Code, Codex & Gemini CLI.",
   "type": "module",
   "bin": {
@@ -21,10 +21,12 @@
     ".codex-plugin",
     ".agents",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
-    "test": "node --test test/*.test.mjs && node scripts/check-versions.mjs"
+    "test": "node --test && node scripts/check-versions.mjs",
+    "check:pack": "npm pack --dry-run"
   },
   "keywords": [
     "agent-skills",
@@ -45,5 +47,9 @@
   "homepage": "https://github.com/112516101106/skilltally#readme",
   "bugs": {
     "url": "https://github.com/112516101106/skilltally/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }

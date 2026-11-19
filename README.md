@@ -1,53 +1,48 @@
 # skilltally
 
-Real-time skill usage tracking via hooks for Antigravity, Claude Code, Codex & Gemini CLI — 100% local, zero dependencies.
+[![CI](https://github.com/112516101106/skilltally/actions/workflows/ci.yml/badge.svg)](https://github.com/112516101106/skilltally/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-0-success.svg)](package.json)
+
+Real-time skill usage tracking via hooks for **Antigravity**, **Claude Code**, **Codex**, and **Gemini CLI** — 100% local, zero dependencies.
 
 Find out which agent skills you actually use, and how much context (`KB` / `~tokens/session`) unused skills and plugins cost you on every turn.
-
-## Features (v0.3.0 — M3)
-
-- **One-command installer & health check (`install`, `uninstall`, `doctor`)**: Idempotently installs hooks for all 4 detected agents (Antigravity, Claude Code, Codex, Gemini CLI), backs up existing configs to `~/.skilltally/backups/`, and verifies runtime health with a live self-test.
-- **Real-time hook tracking (`bin/track.mjs`)**: Appends one normalized JSONL line to `~/.skilltally/events.jsonl` whenever an agent activates a skill (reads `SKILL.md` or invokes `Skill` / `activate_skill`), with automatic monthly archive rotation when `events.jsonl` exceeds 20 MB.
-- **Multi-platform plugin packaging**: Ships native manifests for Antigravity (`plugin.json` + `hooks.json`), Claude Code (`.claude-plugin/`), Codex (`.codex-plugin/` + `.agents/plugins/marketplace.json`), and Gemini CLI (`gemini-extension.json`), sharing `hooks/claude-codex-hooks.json` (`async: true`) for Claude & Codex.
-- **History backfill (`skilltally backfill`)**: Imports historical sessions from Antigravity (`antigravity`, `antigravity-cli`, `antigravity-ide`, including `transcript_full.jsonl`), Codex (`~/.codex/sessions` + `~/.codex/archived_sessions`, including `.jsonl.zst`), Claude Code (`~/.claude/projects/**/*.jsonl`), and Gemini CLI (`~/.gemini/tmp/*/chats/*.{json,jsonl}`).
-- **Reporting & export (`stats`, `top`, `unused`, `timeline`, `export`, `inventory`)**: Shows primary `activations` (`session × skill`) and secondary `reads`, calculates Context Tax savings for unused skills/plugins, renders ASCII timelines (`day`/`week`/`month`), and exports RFC-4180 CSV or JSON.
-- **Opt-in hook debugging (`debug on|off|status`)**: Temporarily captures raw hook stdin payloads to `~/.skilltally/debug.jsonl` for troubleshooting and deletes `debug.jsonl` automatically on `debug off`.
-- **Zero dependencies & local-first**: Runs on Node.js `>= 18` (Node `>= 22.15` recommended for native `.zst` Codex archive decompression). No network calls, no telemetry.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/112516101106/skilltally.git
-cd skilltally
+# 1. Detect installed agents and register lightweight PostToolUse/AfterTool hooks
+npx skilltally install --dry-run
+npx skilltally install
 
-# Install hooks for detected agents (preview first with --dry-run)
-node bin/cli.mjs install --dry-run
-node bin/cli.mjs install
+# 2. Import historical sessions from local logs
+npx skilltally backfill
 
-# Import existing Antigravity, Codex, Claude Code & Gemini CLI history
-node bin/cli.mjs backfill
+# 3. Verify hook registration and run live self-test
+npx skilltally doctor
 
-# Verify hooks & self-test
-node bin/cli.mjs doctor
-
-# View usage stats (primary metric: unique session × skill activations)
-node bin/cli.mjs stats --since 30d
-node bin/cli.mjs top -n 20 --since all
-node bin/cli.mjs timeline --by week --since 90d
-
-# See unused enabled skills and context savings by plugin
-node bin/cli.mjs unused --since 90d
-
-# Export deduplicated events
-node bin/cli.mjs export --format csv -o skilltally.csv
-
-# Inspect installed skills
-node bin/cli.mjs inventory
+# 4. Inspect usage and unused context tax
+npx skilltally stats --since 30d
+npx skilltally unused --since 90d
 ```
 
-## Plugin & Hook Installation by Host
+Or ask your coding agent directly: *"Which agent skills do I use the most?"*
 
-- **Antigravity**: Link or copy this repo to `~/.gemini/config/plugins/skilltally` (or run `skilltally install --host antigravity`).
+## Supported Agents
+
+| Agent | Real-time hook | History backfill | Plugin / Extension install | Notes |
+|---|---|---|---|---|
+| **Antigravity** | `PostToolUse` (`read_file\|view_file`) | `~/.gemini/antigravity*/brain/` | Native plugin (`plugin.json` + `hooks.json`) | POSIX fast-path skips Node on misses (~7 ms); reads `transcript_full.jsonl` when truncated |
+| **Claude Code** | `PostToolUse` (`Skill\|Read`, `async: true`) | `~/.claude/projects/**/*.jsonl` | `.claude-plugin/plugin.json` | Collapses `Skill` + `Read` calls within 5 s |
+| **Codex** | `PostToolUse` (async) | `~/.codex/{sessions,archived_sessions}/` | `.codex-plugin/plugin.json` | Supports `.jsonl.zst` archives natively on Node `>= 22.15`; approve via `/hooks` |
+| **Gemini CLI** | `AfterTool` (`activate_skill`) | `~/.gemini/tmp/*/chats/*.{json,jsonl}` | `gemini-extension.json` + `install --host gemini` | `timeout: 5000` ms in `~/.gemini/settings.json` |
+
+## Plugin & Skill Installation
+
+If you prefer native plugin managers over `npx skilltally install`:
+
+- **Antigravity**: Copy or symlink this repository to `~/.gemini/config/plugins/skilltally` (or run `npx skilltally install --host antigravity`).
 - **Claude Code**:
   ```text
   /plugin marketplace add 112516101106/skilltally
@@ -58,40 +53,93 @@ node bin/cli.mjs inventory
   codex plugin marketplace add https://github.com/112516101106/skilltally.git
   codex plugin add skilltally@skilltally
   ```
-  Then run `codex` and open `/hooks` to review and trust the `skilltally` `PostToolUse` hook (required by Codex for user/plugin hooks, whether installed as a plugin or via `skilltally install --host codex`).
+  Run `codex`, open `/hooks`, and trust the `skilltally` `PostToolUse` hook.
 - **Gemini CLI**:
   ```bash
   gemini extensions install https://github.com/112516101106/skilltally
-  node bin/cli.mjs install --host gemini
+  npx skilltally install --host gemini
   ```
-  The extension manifest registers the `skilltally` skill, while `skilltally install --host gemini` merges the `AfterTool` hook (`activate_skill`, `timeout: 5000` ms) into `~/.gemini/settings.json` without conflicting with Claude Code's plugin hook path.
+- **Companion skill only (`skills.sh`)**:
+  ```bash
+  npx skills add 112516101106/skilltally
+  ```
 
-Or ask your agent: *"Which skills do I use the most?"* — the bundled `skills/skilltally/SKILL.md` teaches the agent how to query `skilltally`.
+## Example Output
 
-## Debug & Uninstall
+### `skilltally stats --since 30d`
 
-```bash
-node bin/cli.mjs debug on             # warning: logs raw hook stdin to ~/.skilltally/debug.jsonl
-node bin/cli.mjs debug off            # disables debug mode and deletes ~/.skilltally/debug.jsonl
+```text
+skilltally — last 30d (2026-10-20 -> 2026-11-19)
+hosts: antigravity 35 · codex 12
 
-node bin/cli.mjs uninstall            # remove hooks from detected hosts, keep data
-node bin/cli.mjs uninstall --purge    # remove hooks and delete ~/.skilltally
+   #  skill                     activations  reads  last used         hosts
+   1  requesting-code-review              8     10  2026-11-12 14:03  antigravity, codex
+   2  systematic-debugging                5      9  2026-11-10 09:41  codex
+   3  agent-browser                       3      4  2026-11-05 12:18  antigravity, codex
+
+installed: 214 · used: 22 · unused: 192  ->  run `skilltally unused`
 ```
 
-## Architecture
+### `skilltally unused --since 90d`
 
-- **Primary metric**: `activations` (unique `(session_id, skill)` pairs) — reading a skill 3 times in the same session still counts as 1 activation.
-- **Secondary metric**: `reads` (total invocations).
-- **Storage**: `~/.skilltally/` (`0700` dir, `0600` files, override via `SKILLTALLY_HOME`):
-  - `events.jsonl`: real-time hook events (automatically rotated to `events-YYYY-MM.jsonl` once > 20 MB).
-  - `events.backfill.jsonl`: idempotent backfill output (re-running `backfill` overwrites cleanly; real-time `hook` events take priority during deduplication).
-  - `runtime/track.mjs`: standalone hook runner used when installed via `skilltally install`.
-  - `backups/`: timestamped backups of host config files before modification.
+```text
+Unused enabled skills — last 90d (2026-08-21 -> 2026-11-19): 192 (48.2 KB ≈ ~12,340 tok/session)
+
+  plugin:science       47 skills   14.8 KB  ~ 3818 tok/session
+    alphagenome-atlas-website-links, alphagenome-single-variant-analysis, … (+41)
+  personal             47 skills   10.6 KB  ~ 2729 tok/session
+    architecture-blueprint-generator, auditing-python-security, … (+41)
+
+Tip: disabling an unused plugin removes all of its skill descriptions from every session context.
+```
+
+## CLI Reference
+
+| Command | Description | Key flags |
+|---|---|---|
+| `install` | Install hooks for detected hosts (`runtime/track.mjs` + backups) | `--host all\|antigravity\|claude\|codex\|gemini`, `--dry-run`, `--force`, `--json` |
+| `uninstall` | Remove `skilltally` hooks (preserves all other user hooks) | `--host ...`, `--purge`, `--dry-run`, `--json` |
+| `doctor` | Check Node version, hook paths, Codex trust, events, and live self-test | `--json` |
+| `backfill` | Import historical skill reads/invocations from local logs | `--host ...`, `--since DATE`, `--dry-run`, `--json` |
+| `stats` | Usage table sorted by `activations` (unique `session × skill`) | `--since 30d\|all\|YYYY-MM-DD`, `--host`, `--project`, `--by-source`, `--metric reads`, `--json` |
+| `top` | Top `N` skills | `-n 20`, plus `stats` flags |
+| `unused` | Enabled installed skills with 0 activations and Context Tax breakdown | `--since 90d`, `--host`, `--all`, `--json` |
+| `timeline` | ASCII usage bar chart over time | `--skill <name>`, `--by day\|week\|month`, `--since`, `--host`, `--project`, `--json` |
+| `export` | Export deduplicated events as JSON or RFC-4180 CSV | `--format json\|csv`, `-o <file>`, `--since`, `--host`, `--project`, `--include-failed` |
+| `inventory` | List installed skills, sources, hosts, enabled state, and description sizes | `--no-project`, `--json` |
+| `debug` | Toggle opt-in raw stdin logging (`on \| off \| status`) | `--json` |
+
+## Privacy, Performance & Reliability
+
+- **100% local, zero telemetry**: Zero network requests, zero third-party runtime dependencies.
+- **No raw arguments stored**: Only the matched `SKILL.md` path (or `Skill`/`activate_skill` name) and `basename(cwd)` are written to `~/.skilltally/` (`0700` dir, `0600` files). Full `cwd` is omitted unless `store_cwd: true` is set in `~/.skilltally/config.json`.
+- **Safe by contract**: `track.mjs` never throws, always exits `0`, and always writes `{}` to `stdout` so hooks never interrupt an agent turn.
+- **Automatic rotation**: When `events.jsonl` exceeds 20 MB, it rotates automatically to `events-YYYY-MM.jsonl` while reports transparently read all archives.
+- **Config backups**: `install` and `uninstall` back up modified host configs to `~/.skilltally/backups/`.
+
+### Configuration (`~/.skilltally/config.json`)
+
+```json
+{
+  "exclude_skills": ["skilltally"],
+  "exclude_sources": [],
+  "aliases": { "native_swarm": "swarm" },
+  "store_cwd": false
+}
+```
+
+## Troubleshooting
+
+- **No events recorded?** Run `npx skilltally doctor` to verify hook paths and run the live pipe self-test.
+- **Codex hooks not firing?** Run `codex` and open `/hooks` to review and trust the `skilltally` `PostToolUse` hook.
+- **Gemini CLI hooks disabled?** Check `"hooksConfig": { "enabled": true }` in `~/.gemini/settings.json`.
+- **Inspecting unknown hook payloads:** Temporarily run `npx skilltally debug on`, trigger a skill once, inspect `~/.skilltally/debug.jsonl`, then run `npx skilltally debug off` (which deletes `debug.jsonl` automatically).
 
 ## Development
 
 ```bash
 npm test
+npm run check:pack
 ```
 
 ## License

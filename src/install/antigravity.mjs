@@ -7,6 +7,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -87,7 +88,7 @@ export function installAntigravity({
 
     writeJsonAtomic(join(target, 'hooks.json'), buildAntigravityHooksJson(), 0o644);
 
-    let version = '0.2.0';
+    let version = '1.0.0';
     try {
       version = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).version || version;
     } catch {}
@@ -117,7 +118,13 @@ export function uninstallAntigravity({ homeDir = homedir(), dryRun = false } = {
   }
 
   if (stat.isSymbolicLink()) {
-    if (!dryRun) unlinkSync(target);
+    if (!dryRun) {
+      try {
+        unlinkSync(target);
+      } catch {
+        rmdirSync(target);
+      }
+    }
     return { host: 'antigravity', status: 'uninstalled', mode: 'symlink', target };
   }
 

@@ -64,7 +64,11 @@ test('scanInventory detects disabled plugins/skills, merges symlinks, and comput
       join(personalSkill, 'SKILL.md'),
       '---\nname: unused-personal\ndescription: ' + 'x'.repeat(200) + '\n---\n'
     );
-    symlinkSync(swarmSkill, join(homeDir, '.agents', 'skills', 'native_swarm'));
+    symlinkSync(
+      swarmSkill,
+      join(homeDir, '.agents', 'skills', 'native_swarm'),
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
 
     // Disabled personal skill in Codex config.toml
     const disabledCodex = join(homeDir, '.codex', 'skills', 'hatch-pet');
@@ -72,7 +76,7 @@ test('scanInventory detects disabled plugins/skills, merges symlinks, and comput
     writeFileSync(join(disabledCodex, 'SKILL.md'), '---\nname: hatch-pet\ndescription: Pet.\n---\n');
     writeFileSync(
       join(homeDir, '.codex', 'config.toml'),
-      `[[skills.config]]\npath = "${join(disabledCodex, 'SKILL.md')}"\nenabled = false\n`
+      `[[skills.config]]\npath = "${join(disabledCodex, 'SKILL.md').replace(/\\/g, '/')}"\nenabled = false\n`
     );
 
     // Project skill

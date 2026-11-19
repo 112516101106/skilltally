@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Node ${{ matrix.node-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+        node-version: [18, 20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm test
+      - name: CLI smoke test
+        shell: bash
+        run: |
+          node bin/cli.mjs --version
+          node bin/cli.mjs --help >/dev/null
+          node -e "
+            const fs = require('node:fs');
+            const os = require('node:os');
+            const path = require('node:path');
+            const assert = require('node:assert/strict');
+            const { execFileSync } = require('node:child_process');
+            const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'skilltally-ci-'));
+            try {
+              const out = execFileSync(process.execPath, ['bin/cli.mjs', 'doctor', '--json'], {
+                encoding: 'utf8',
+                env: { ...process.env, SKILLTALLY_HOME: tmp }
+              });
+              const doc = JSON.parse(out);
+              assert.equal(doc.ok, true);
+              assert.equal(doc.selfTest.ok, true);
+            } finally {
+              fs.rmSync(tmp, { recursive: true, force: true });
+            }
+          "
+
+  pack:
+    name: Package tarball check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run check:pack
+      - name: Verify extracted tarball CLI
+        run: |
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          TGZ=$(npm pack --silent --pack-destination "$TMP_DIR")
+          tar -xzf "$TMP_DIR/$TGZ" -C "$TMP_DIR"
+          PKG_VER=$(node -p "require('./package.json').version")
+          CLI_VER=$(node "$TMP_DIR/package/bin/cli.mjs" --version)
+          test "$CLI_VER" = "$PKG_VER"
+          SKILLTALLY_HOME="$TMP_DIR/data" node "$TMP_DIR/package/bin/cli.mjs" doctor --json | node -e "
+            const d = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+            if (!d.ok || !d.selfTest?.ok) process.exit(1);
+          "

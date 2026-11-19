@@ -51,7 +51,7 @@ test('Antigravity install/uninstall preserves dev symlinks, skips config.json, a
     assert.equal(existsSync(inst.target), false);
 
     // Symlink preservation & safe unlink (does NOT delete pkgRoot)
-    symlinkSync(pkgRoot, inst.target);
+    symlinkSync(pkgRoot, inst.target, process.platform === 'win32' ? 'junction' : 'dir');
     const symInst = installAntigravity({ homeDir, pkgRoot });
     assert.equal(symInst.status, 'unchanged');
     assert.equal(symInst.mode, 'symlink');

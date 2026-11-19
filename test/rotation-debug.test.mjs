@@ -62,13 +62,20 @@ test('debug on|off|status toggles .debug marker, activates fast-track capture, a
     assert.equal(onStatus.enabled, true);
     assert.equal(existsSync(join(tmp, '.debug')), true);
 
-    // Even a miss payload gets logged via fast-track wrapper when .debug marker exists
+    // Even a miss payload gets logged via fast-track wrapper (or track.mjs on win32) when .debug marker exists
     const missPayload = readFileSync(join(fixturesDir, 'antigravity/hook-miss.json'), 'utf8');
-    const res = spawnSync(fastTrack, [], {
-      input: missPayload,
-      encoding: 'utf8',
-      env: { ...process.env, SKILLTALLY_HOME: tmp },
-    });
+    const res =
+      process.platform === 'win32'
+        ? spawnSync(process.execPath, [trackScript, '--host', 'antigravity'], {
+            input: missPayload,
+            encoding: 'utf8',
+            env: { ...process.env, SKILLTALLY_HOME: tmp },
+          })
+        : spawnSync(fastTrack, [], {
+            input: missPayload,
+            encoding: 'utf8',
+            env: { ...process.env, SKILLTALLY_HOME: tmp },
+          });
     assert.equal(res.status, 0);
     assert.equal(res.stdout, '{}');
     assert.equal(existsSync(join(tmp, 'events.jsonl')), false);

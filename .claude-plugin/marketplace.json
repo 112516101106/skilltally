@@ -10,7 +10,7 @@
     {
       "name": "skilltally",
       "description": "Track skill activations and identify unused skills eating context.",
-      "version": "0.3.0",
+      "version": "1.0.0",
       "source": "./",
       "category": "productivity"
     }
