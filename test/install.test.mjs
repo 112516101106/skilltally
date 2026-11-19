@@ -140,7 +140,7 @@ test('Codex install/uninstall preserves hooks, checks trust status, and cleans u
 
     writeFileSync(
       join(homeDir, '.codex', 'config.toml'),
-      '[hooks.state."user:hooks.json:post_tool_use:0:0"]\ntrusted_hash = "sha256:abc"\n'
+      '[hooks.state."user:hooks.json:post_tool_use:0:0"]\ntrusted_hash = "sha256:abc"\n[hooks.state."user:hooks.json:user_prompt_submit:0:0"]\ntrusted_hash = "sha256:def"\n'
     );
     assert.equal(checkCodexHookTrust(homeDir), 'trusted');
 
@@ -149,8 +149,10 @@ test('Codex install/uninstall preserves hooks, checks trust status, and cleans u
 
     const u1 = uninstallCodex({ homeDir, dataHome });
     assert.equal(u1.status, 'uninstalled');
+    assert.equal(u1.removedCount, 2);
     const after = JSON.parse(readFileSync(hooksPath, 'utf8'));
     assert.equal(after.hooks.PostToolUse, undefined);
+    assert.equal(after.hooks.UserPromptSubmit, undefined);
     assert.equal(after.hooks.SessionStart.length, 1);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -251,7 +253,9 @@ test('Gemini CLI install/uninstall preserves settings, uses 5000ms AfterTool hoo
     assert.equal(saved.theme, 'Default');
     assert.deepEqual(saved.mcpServers, { myServer: { command: 'node' } });
     assert.equal(saved.hooks.AfterTool.length, 2);
-    const skilltallyGroup = saved.hooks.AfterTool.find((g) => g.matcher === 'activate_skill');
+    const skilltallyGroup = saved.hooks.AfterTool.find(
+      (g) => g.matcher === 'activate_skill|read_file|view_file|read_many_files|run_shell_command'
+    );
     assert.equal(skilltallyGroup.hooks[0].timeout, 5000);
     assert.equal(skilltallyGroup.hooks[0].name, 'skilltally');
 
@@ -374,6 +378,13 @@ test('runDoctor ignores third-party hooks and matches exact Codex post_tool_use 
     writeFileSync(
       join(homeDir, '.codex', 'config.toml'),
       `${baseToml}\n[hooks.state."/Users/u/.codex/hooks.json:post_tool_use:1:0"]\ntrusted_hash = "sha256:skilltally1"\n`
+    );
+    // Still untrusted until UserPromptSubmit is also trusted
+    assert.equal(checkCodexHookTrust(homeDir), 'untrusted');
+
+    writeFileSync(
+      join(homeDir, '.codex', 'config.toml'),
+      `${baseToml}\n[hooks.state."/Users/u/.codex/hooks.json:post_tool_use:1:0"]\ntrusted_hash = "sha256:skilltally1"\n[hooks.state."/Users/u/.codex/hooks.json:user_prompt_submit:0:0"]\ntrusted_hash = "sha256:skilltally2"\n`
     );
     assert.equal(checkCodexHookTrust(homeDir), 'trusted');
 

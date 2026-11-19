@@ -3,7 +3,13 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { detectSkillCalls } from '../core/detect.mjs';
 
-const TARGET_TOOLS = new Set(['activate_skill', 'read_file', 'view_file', 'run_shell_command']);
+const TARGET_TOOLS = new Set([
+  'activate_skill',
+  'read_file',
+  'view_file',
+  'read_many_files',
+  'run_shell_command',
+]);
 
 function findGeminiChatFiles(homeDir) {
   const tmpRoot = join(homeDir, '.gemini', 'tmp');

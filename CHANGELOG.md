@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-11-19
+
+### Added
+- Realtime `UserPromptSubmit` hook and `<skill>` / `[$skill](.../SKILL.md)` backfill detection for Codex explicit `$skill` invocations (`via: "mention"`).
+- Expanded hook matchers and backfill parsers across all 4 providers:
+  - **Antigravity**: added `run_command` to `PostToolUse` matcher and fallback `<SKILL>` slash-command detection in `backfillAntigravity`.
+  - **Claude Code**: added `View|Bash` to `PostToolUse` matcher and `Base directory for this skill:` slash-command detection in `backfillClaude`.
+  - **Gemini CLI**: added `read_file|view_file|read_many_files|run_shell_command` to `AfterTool` matcher and `read_many_files` array path support.
+
+### Fixed
+- Verify trust status across both `post_tool_use` and `user_prompt_submit` hook indices in `~/.codex/config.toml` and clean up all hook events on `uninstall`.
+
 ## [1.0.1] - 2026-11-19
 
 ### Fixed

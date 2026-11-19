@@ -17,8 +17,17 @@ import { fileURLToPath } from 'node:url';
 export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 export const SKILL_PATH_RE =
   /((?:[A-Za-z]:|~)?[^\s"'`<>|;(){}\[\]]*?[\\/]skills[\\/]([A-Za-z0-9][A-Za-z0-9._-]{0,127})[\\/]SKILL\.md)(?=$|[\s"'`<>|;),}\]])/gi;
+const EXPLICIT_SKILL_LINK_RE =
+  /\[[\$@\/]?([A-Za-z0-9][A-Za-z0-9._-]{0,127})\]\(([^()\s]*?[\\/]skills[\\/][A-Za-z0-9][A-Za-z0-9._-]{0,127}[\\/]SKILL\.md)\)/gi;
+const CODEX_SKILL_TAG_RE =
+  /<skill>\s*<name>([^<\r\n]+)<\/name>\s*<path>([^<\r\n]*?[\\/]SKILL\.md)<\/path>/gi;
+const AGY_SKILL_TAG_RE =
+  /<SKILL>[\s\S]*?read and use the "([^"]+)" skill\.\s*The path to the skill file is:\s*([^\s<]+?[\\/]SKILL\.md)\s*<\/SKILL>/gi;
+const CLAUDE_SKILL_BASEDIR_RE =
+  /Base directory for this skill:\s*([^\r\n<]+?[\\/]skills[\\/]([A-Za-z0-9][A-Za-z0-9._-]{0,127}))\/?(?=\r?\n|$|<)/gi;
 
 const PATH_KEYS = ['Path', 'AbsolutePath', 'TargetFile', 'file_path', 'path', 'absolute_path'];
+const ARRAY_PATH_KEYS = ['paths', 'include', 'files'];
 const CMD_KEYS = ['CommandLine', 'command', 'cmd', 'input', 'argv'];
 const WRITE_TOOL_RE = /^(write|edit|replace|apply_patch|multiedit|notebookedit|create_file|delete_file)/i;
 const READ_CMD_RE = /^(cat|sed|head|tail|less|more|bat|nl|awk|type|Get-Content)\b/i;
@@ -56,7 +65,13 @@ export function resolveHost(hostFlag, payload, env = process.env) {
     return hostFlag;
   }
   if (payload?.toolCall) return refineAntigravityHost(payload);
-  if (payload?.hook_event_name === 'AfterTool' || env.GEMINI_PROJECT_DIR) return 'gemini';
+  if (
+    payload?.hook_event_name === 'AfterTool' ||
+    payload?.hook_event_name === 'BeforeAgent' ||
+    env.GEMINI_PROJECT_DIR
+  ) {
+    return 'gemini';
+  }
   const tp = String(payload?.transcript_path ?? '');
   if (
     env.CODEX_THREAD_ID ||
@@ -91,10 +106,22 @@ export function normalizeHookPayload(host, payload) {
     Boolean(p.error) ||
     resp?.is_error === true ||
     (typeof resp?.exit_code === 'number' && resp.exit_code !== 0);
+  const prompt =
+    typeof p.prompt === 'string'
+      ? p.prompt
+      : typeof p.user_prompt === 'string'
+        ? p.user_prompt
+        : typeof p.userMessage === 'string'
+          ? p.userMessage
+          : undefined;
+  const hookEvent = p.hook_event_name ?? p.hookEventName;
   return {
-    tool: p.tool_name,
+    tool:
+      p.tool_name ??
+      (hookEvent === 'UserPromptSubmit' || hookEvent === 'BeforeAgent' ? hookEvent : undefined),
     args: p.tool_input ?? {},
-    callId: p.tool_use_id ?? p.call_id,
+    ...(prompt !== undefined ? { prompt } : {}),
+    callId: p.tool_use_id ?? p.call_id ?? p.turn_id ?? p.prompt_id,
     sessionId: p.session_id,
     cwd: p.cwd,
     model: p.model,
@@ -153,7 +180,14 @@ function extractCodexCommandStrings(text) {
   return extracted.length > 0 ? extracted : [text];
 }
 
-export function detectSkillCalls({ tool, args, cwd = '', homeDir = homedir(), allowShell = true }) {
+export function detectSkillCalls({
+  tool,
+  args,
+  prompt,
+  cwd = '',
+  homeDir = homedir(),
+  allowShell = true,
+}) {
   const safeArgs = args && typeof args === 'object' ? args : {};
 
   if (tool === 'Skill' && safeArgs.skill) {
@@ -178,32 +212,69 @@ export function detectSkillCalls({ tool, args, cwd = '', homeDir = homedir(), al
     }
   }
 
-  if (WRITE_TOOL_RE.test(tool ?? '')) return [];
-
   const hits = [];
   const seenPaths = new Set();
+
+  const pushPathHit = (skill, skillPath, via) => {
+    const cleanSkill = String(skill || '').trim();
+    const cleanPath = String(skillPath || '').trim();
+    if (!cleanSkill || !cleanPath) return;
+    const normKey = cleanPath.replace(/\\/g, '/');
+    if (seenPaths.has(normKey)) return;
+    seenPaths.add(normKey);
+    hits.push({
+      skill: cleanSkill,
+      skill_path: cleanPath,
+      source: resolveSource(cleanPath, cwd, homeDir),
+      via,
+    });
+  };
+
+  if (typeof prompt === 'string' && prompt.trim()) {
+    CODEX_SKILL_TAG_RE.lastIndex = 0;
+    for (const m of prompt.matchAll(CODEX_SKILL_TAG_RE)) {
+      pushPathHit(m[1], m[2], 'mention');
+    }
+    EXPLICIT_SKILL_LINK_RE.lastIndex = 0;
+    for (const m of prompt.matchAll(EXPLICIT_SKILL_LINK_RE)) {
+      pushPathHit(m[1], m[2], 'mention');
+    }
+    AGY_SKILL_TAG_RE.lastIndex = 0;
+    for (const m of prompt.matchAll(AGY_SKILL_TAG_RE)) {
+      pushPathHit(m[1], m[2], 'slash_command');
+    }
+    CLAUDE_SKILL_BASEDIR_RE.lastIndex = 0;
+    for (const m of prompt.matchAll(CLAUDE_SKILL_BASEDIR_RE)) {
+      const baseDir = m[1].trim().replace(/[\\/]+$/, '');
+      pushPathHit(m[2], `${baseDir}/SKILL.md`, 'slash_command');
+    }
+    if (hits.length > 0 && (!tool || tool === 'UserPromptSubmit' || tool === 'BeforeAgent' || tool === 'USER_INPUT')) {
+      return hits;
+    }
+  }
+
+  if (WRITE_TOOL_RE.test(tool ?? '')) return hits;
 
   const collectFromText = (text, via) => {
     if (!text.toLowerCase().includes('skill.md')) return;
     SKILL_PATH_RE.lastIndex = 0;
     for (const m of text.matchAll(SKILL_PATH_RE)) {
-      const skillPath = m[1];
-      const skill = m[2];
-      const normKey = skillPath.replace(/\\/g, '/');
-      if (seenPaths.has(normKey)) continue;
-      seenPaths.add(normKey);
-      hits.push({
-        skill,
-        skill_path: skillPath,
-        source: resolveSource(skillPath, cwd, homeDir),
-        via,
-      });
+      pushPathHit(m[2], m[1], via);
     }
   };
 
   for (const key of PATH_KEYS) {
     if (typeof safeArgs[key] === 'string') {
       collectFromText(unwrapArg(safeArgs[key]), 'read');
+    }
+  }
+  for (const key of ARRAY_PATH_KEYS) {
+    if (Array.isArray(safeArgs[key])) {
+      for (const item of safeArgs[key]) {
+        if (typeof item === 'string' && !item.includes('*')) {
+          collectFromText(unwrapArg(item), 'read');
+        }
+      }
     }
   }
   if (hits.length > 0) return hits;
@@ -280,7 +351,7 @@ export function main() {
   const payload = JSON.parse(raw);
   const host = resolveHost(hostFlag, payload);
   const n = normalizeHookPayload(host, payload);
-  const hits = detectSkillCalls({ tool: n.tool, args: n.args, cwd: n.cwd });
+  const hits = detectSkillCalls({ tool: n.tool, args: n.args, prompt: n.prompt, cwd: n.cwd });
   if (hits.length === 0) return;
 
   mkdirSync(home, { recursive: true, mode: 0o700 });

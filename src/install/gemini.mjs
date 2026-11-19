@@ -32,7 +32,7 @@ export function installGemini({
   const doc = readJsonObject(settingsPath);
 
   const { nextDoc, changed, action } = mergeEventHook(doc, 'AfterTool', {
-    matcher: 'activate_skill',
+    matcher: 'activate_skill|read_file|view_file|read_many_files|run_shell_command',
     handler: {
       name: 'skilltally',
       type: 'command',

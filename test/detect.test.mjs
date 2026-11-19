@@ -104,6 +104,66 @@ test('detects Claude Skill tool, Gemini activate_skill, Codex exec, and Windows 
   assert.equal(win.length, 1);
   assert.equal(win[0].skill, 'z');
   assert.equal(win[0].source, 'personal');
+
+  // Codex UserPromptSubmit explicit [$skill](path/to/SKILL.md) mention
+  const codexMention = detectSkillCalls({
+    tool: 'UserPromptSubmit',
+    args: {},
+    prompt: '[$my-backup](/Users/tester/.agents/skills/my-backup/SKILL.md) run backup now',
+    homeDir: '/Users/tester',
+  });
+  assert.deepEqual(codexMention, [
+    {
+      skill: 'my-backup',
+      skill_path: '/Users/tester/.agents/skills/my-backup/SKILL.md',
+      source: 'personal',
+      via: 'mention',
+    },
+  ]);
+
+  // Codex injected <skill> XML tag
+  const codexTag = detectSkillCalls({
+    tool: 'UserPromptSubmit',
+    args: {},
+    prompt:
+      '<skill>\n<name>office-hours</name>\n<path>/Users/tester/proj/.agents/skills/gstack-office-hours/SKILL.md</path>\n---\n</skill>',
+    cwd: '/Users/tester/proj',
+    homeDir: '/Users/tester',
+  });
+  assert.deepEqual(codexTag, [
+    {
+      skill: 'office-hours',
+      skill_path: '/Users/tester/proj/.agents/skills/gstack-office-hours/SKILL.md',
+      source: 'project',
+      via: 'mention',
+    },
+  ]);
+
+  // Claude Code slash-command Base directory injection
+  const claudeSlash = detectSkillCalls({
+    tool: 'UserPromptSubmit',
+    args: {},
+    prompt: 'Base directory for this skill: /Users/tester/.claude/skills/clean-code\n\n# Clean Code',
+    homeDir: '/Users/tester',
+  });
+  assert.deepEqual(claudeSlash, [
+    {
+      skill: 'clean-code',
+      skill_path: '/Users/tester/.claude/skills/clean-code/SKILL.md',
+      source: 'personal',
+      via: 'slash_command',
+    },
+  ]);
+
+  // Gemini read_many_files array path args
+  const geminiMulti = detectSkillCalls({
+    tool: 'read_many_files',
+    args: { paths: ['/Users/tester/.gemini/skills/seo-audit/SKILL.md', '/Users/tester/.gemini/skills/*/SKILL.md'] },
+    homeDir: '/Users/tester',
+  });
+  assert.equal(geminiMulti.length, 1);
+  assert.equal(geminiMulti[0].skill, 'seo-audit');
+  assert.equal(geminiMulti[0].via, 'read');
 });
 
 test('resolveSource handles plugin cache marketplace hierarchy and personal vs project precedence', () => {

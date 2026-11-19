@@ -80,6 +80,8 @@ export function backfillAntigravity({ homeDir = homedir(), since = null } = {}) 
 
     const lines = raw.split('\n');
     const fullCache = { lines: undefined };
+    const convEvents = [];
+    const pendingUserSkills = [];
 
     for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
       const line = lines[lineIdx];
@@ -93,6 +95,41 @@ export function backfillAntigravity({ homeDir = homedir(), since = null } = {}) 
         continue;
       }
 
+      const ts = obj.created_at;
+      const stepIdx = obj.step_index ?? lineIdx;
+
+      if (obj.type === 'USER_INPUT' && typeof obj.content === 'string' && obj.content.includes('<SKILL>')) {
+        if (sinceMs !== null && ts) {
+          const tsMs = Date.parse(ts);
+          if (Number.isFinite(tsMs) && tsMs < sinceMs) continue;
+        }
+        const promptHits = detectSkillCalls({
+          tool: 'USER_INPUT',
+          args: {},
+          prompt: obj.content,
+          cwd: '',
+          homeDir,
+          allowShell: false,
+        });
+        promptHits.forEach((h, hitIdx) => {
+          pendingUserSkills.push({
+            v: 1,
+            id: `${item.host}:${item.sessionId}:${stepIdx}#${hitIdx}`,
+            ts: ts || new Date(0).toISOString(),
+            host: item.host,
+            skill: h.skill,
+            ...(h.skill_path ? { skill_path: h.skill_path } : {}),
+            source: h.source,
+            via: h.via,
+            tool: 'USER_INPUT',
+            session_id: item.sessionId,
+            origin: 'backfill',
+            ok: obj.status !== 'ERROR',
+          });
+        });
+        continue;
+      }
+
       if (Array.isArray(obj.truncated_fields) && obj.truncated_fields.includes('tool_calls')) {
         const fullObj = loadFullRecord(fullCache, item.fullPath, lineIdx, obj.step_index);
         if (fullObj) obj = fullObj;
@@ -101,13 +138,11 @@ export function backfillAntigravity({ homeDir = homedir(), since = null } = {}) 
       const toolCalls = obj.tool_calls;
       if (!Array.isArray(toolCalls) || toolCalls.length === 0) continue;
 
-      const ts = obj.created_at;
       if (sinceMs !== null && ts) {
         const tsMs = Date.parse(ts);
         if (Number.isFinite(tsMs) && tsMs < sinceMs) continue;
       }
 
-      const stepIdx = obj.step_index ?? lineIdx;
       let stepHitIdx = 0;
 
       for (const tc of toolCalls) {
@@ -123,7 +158,7 @@ export function backfillAntigravity({ homeDir = homedir(), since = null } = {}) 
           allowShell: true,
         });
         for (const h of hits) {
-          events.push({
+          convEvents.push({
             v: 1,
             id: `${item.host}:${item.sessionId}:${stepIdx}#${stepHitIdx++}`,
             ts: ts || new Date(0).toISOString(),
@@ -141,6 +176,14 @@ export function backfillAntigravity({ homeDir = homedir(), since = null } = {}) 
         }
       }
     }
+
+    const readSkillSet = new Set(convEvents.map((e) => e.skill));
+    for (const uEv of pendingUserSkills) {
+      if (!readSkillSet.has(uEv.skill)) {
+        convEvents.push(uEv);
+      }
+    }
+    events.push(...convEvents);
   }
 
   return {

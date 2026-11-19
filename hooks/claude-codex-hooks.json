@@ -2,7 +2,20 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Skill|Read|Bash|exec|exec_command|shell|shell_command|local_shell",
+        "matcher": "Skill|Read|View|Bash|exec|exec_command|shell|shell_command|local_shell|read_file|view_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/track.mjs\" --host auto",
+            "async": true,
+            "timeout": 5,
+            "statusMessage": "skilltally"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
         "hooks": [
           {
             "type": "command",

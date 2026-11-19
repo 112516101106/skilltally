@@ -35,7 +35,7 @@ function buildAntigravityHooksJson() {
     skilltally: {
       PostToolUse: [
         {
-          matcher: 'read_file|view_file',
+          matcher: 'read_file|view_file|run_command',
           hooks: [
             {
               type: 'command',
@@ -88,7 +88,7 @@ export function installAntigravity({
 
     writeJsonAtomic(join(target, 'hooks.json'), buildAntigravityHooksJson(), 0o644);
 
-    let version = '1.0.1';
+    let version = '1.0.2';
     try {
       version = JSON.parse(readFileSync(join(pkgRoot, 'package.json'), 'utf8')).version || version;
     } catch {}

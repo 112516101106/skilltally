@@ -62,7 +62,7 @@ export function installClaude({
   const settingsPath = join(homeDir, '.claude', 'settings.json');
   const doc = readJsonObject(settingsPath);
   const { nextDoc, changed, action } = mergePostToolUseHook(doc, {
-    matcher: 'Skill|Read',
+    matcher: 'Skill|Read|View|Bash',
     command,
     async: true,
     timeout: 5,

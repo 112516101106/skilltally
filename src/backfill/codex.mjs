@@ -86,7 +86,7 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
       continue;
     }
     const raw = readRes.text;
-    if (!raw || !raw.includes('SKILL.md')) continue;
+    if (!raw || (!raw.includes('SKILL.md') && !raw.includes('<skill>'))) continue;
 
     let sessionId = sessionIdFromFilename(file);
     let cwd = '';
@@ -94,6 +94,8 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
 
     const pendingCalls = [];
     const failedCalls = new Set();
+    let turnIdx = 0;
+    const turnPromptSkills = new Set();
 
     for (const line of raw.split('\n')) {
       if (!line) continue;
@@ -115,11 +117,58 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
       if (obj.type === 'turn_context' && obj.payload) {
         if (obj.payload.cwd) cwd = obj.payload.cwd;
         if (obj.payload.model) model = obj.payload.model;
+        turnPromptSkills.clear();
+        turnIdx += 1;
         continue;
       }
 
       if (obj.type !== 'response_item' || !obj.payload) continue;
       const p = obj.payload;
+
+      if (p.type === 'message' && p.role === 'user' && Array.isArray(p.content)) {
+        for (const part of p.content) {
+          const text = part?.text;
+          if (
+            typeof text !== 'string' ||
+            (!text.includes('<skill>') && !text.includes('SKILL.md'))
+          ) {
+            continue;
+          }
+          const promptHits = detectSkillCalls({
+            tool: 'UserPromptSubmit',
+            args: {},
+            prompt: text,
+            cwd,
+            homeDir,
+            allowShell: false,
+          });
+          const uniqueTurnHits = [];
+          for (const h of promptHits) {
+            const key = `${h.skill}\0${(h.skill_path || '').replace(/\\/g, '/')}`;
+            if (turnPromptSkills.has(key)) continue;
+            turnPromptSkills.add(key);
+            uniqueTurnHits.push(h);
+          }
+          if (uniqueTurnHits.length > 0) {
+            pendingCalls.push({
+              idx: pendingCalls.length,
+              ts: obj.timestamp,
+              tool: 'UserPromptSubmit',
+              callId: p.id || `prompt_${turnIdx}_${pendingCalls.length}`,
+              args: {},
+              precomputedHits: uniqueTurnHits,
+              cwd,
+              model,
+            });
+          }
+        }
+        continue;
+      }
+
+      if (p.type === 'message' && p.role === 'assistant') {
+        turnPromptSkills.clear();
+        continue;
+      }
 
       if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
         if (p.call_id && isOutputError(p.output)) {
@@ -129,6 +178,7 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
       }
 
       if (p.type !== 'function_call' && p.type !== 'custom_tool_call') continue;
+      turnPromptSkills.clear();
 
       const textToScan = p.type === 'function_call' ? p.arguments : p.input;
       if (typeof textToScan !== 'string' || !textToScan.includes('SKILL.md')) continue;
@@ -162,13 +212,15 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
         if (Number.isFinite(tsMs) && tsMs < sinceMs) continue;
       }
 
-      const hits = detectSkillCalls({
-        tool: call.tool,
-        args: call.args,
-        cwd: call.cwd,
-        homeDir,
-        allowShell: true,
-      });
+      const hits =
+        call.precomputedHits ||
+        detectSkillCalls({
+          tool: call.tool,
+          args: call.args,
+          cwd: call.cwd,
+          homeDir,
+          allowShell: true,
+        });
 
       const ok = call.callId ? !failedCalls.has(call.callId) : true;
       hits.forEach((h, hitIdx) => {

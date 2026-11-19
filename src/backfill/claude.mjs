@@ -37,7 +37,7 @@ export function backfillClaude({ homeDir = homedir(), since = null } = {}) {
     } catch {
       continue;
     }
-    if (!raw || (!raw.includes('"Skill"') && !raw.includes('SKILL.md'))) continue;
+    if (!raw || (!raw.includes('"Skill"') && !raw.includes('SKILL.md') && !raw.includes('Base directory for this skill:'))) continue;
 
     let sessionId = basename(file, '.jsonl');
     let cwd = '';
@@ -57,16 +57,49 @@ export function backfillClaude({ homeDir = homedir(), since = null } = {}) {
       if (obj.cwd) cwd = obj.cwd;
 
       const content = obj.message?.content;
-      if (!Array.isArray(content)) continue;
-
       if (obj.type === 'user') {
+        if (typeof content === 'string') {
+          if (content.includes('Base directory for this skill:') || content.includes('SKILL.md') || content.includes('<skill>')) {
+            pendingCalls.push({
+              idx: pendingCalls.length,
+              ts: obj.timestamp,
+              tool: 'UserPromptSubmit',
+              callId: obj.uuid || `user_${pendingCalls.length}`,
+              input: {},
+              prompt: content,
+              cwd,
+              model: undefined,
+            });
+          }
+          continue;
+        }
+        if (!Array.isArray(content)) continue;
         for (const block of content) {
           if (block?.type === 'tool_result' && block.is_error === true && block.tool_use_id) {
             failedIds.add(block.tool_use_id);
+          } else if (
+            block?.type === 'text' &&
+            typeof block.text === 'string' &&
+            (block.text.includes('Base directory for this skill:') ||
+              block.text.includes('SKILL.md') ||
+              block.text.includes('<skill>'))
+          ) {
+            pendingCalls.push({
+              idx: pendingCalls.length,
+              ts: obj.timestamp,
+              tool: 'UserPromptSubmit',
+              callId: obj.uuid || `user_${pendingCalls.length}`,
+              input: {},
+              prompt: block.text,
+              cwd,
+              model: undefined,
+            });
           }
         }
         continue;
       }
+
+      if (!Array.isArray(content)) continue;
 
       if (obj.type !== 'assistant') continue;
       const model = obj.message?.model;
@@ -94,9 +127,10 @@ export function backfillClaude({ homeDir = homedir(), since = null } = {}) {
       const hits = detectSkillCalls({
         tool: call.tool,
         args: call.input,
+        prompt: call.prompt,
         cwd: call.cwd,
         homeDir,
-        allowShell: true,
+        allowShell: call.tool !== 'UserPromptSubmit',
       });
 
       const ok = call.callId ? !failedIds.has(call.callId) : true;

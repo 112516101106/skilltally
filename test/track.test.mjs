@@ -47,6 +47,37 @@ test('bin/track.mjs records hit fixtures across all 4 hosts with --host auto', (
       assert.equal(last.source, expectedSource);
       assert.equal(last.origin, 'hook');
     }
+
+    // Codex UserPromptSubmit explicit [$skill](path/to/SKILL.md) hook payload
+    const promptInput = JSON.stringify({
+      session_id: '00000000-0000-4000-8000-000000000001',
+      turn_id: 'turn-001',
+      transcript_path: '/Users/tester/.codex/sessions/2026/11/19/rollout.jsonl',
+      cwd: '/Users/tester/projects/demo-app',
+      model: 'gpt-6.1-sol',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: '[$my-backup](/Users/tester/.agents/skills/my-backup/SKILL.md) run backup now\n',
+    });
+    const promptRes = spawnSync(process.execPath, [trackScript, '--host', 'codex'], {
+      input: promptInput,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HOME: '/Users/tester',
+        USERPROFILE: '/Users/tester',
+        SKILLTALLY_HOME: home,
+      },
+    });
+    assert.equal(promptRes.status, 0);
+    assert.equal(promptRes.stdout, '{}');
+    const allLines = readFileSync(join(home, 'events.jsonl'), 'utf8').trim().split('\n');
+    const lastEv = JSON.parse(allLines[allLines.length - 1]);
+    assert.equal(lastEv.host, 'codex');
+    assert.equal(lastEv.skill, 'my-backup');
+    assert.equal(lastEv.source, 'personal');
+    assert.equal(lastEv.via, 'mention');
+    assert.equal(lastEv.tool, 'UserPromptSubmit');
+    assert.equal(lastEv.origin, 'hook');
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -34,13 +34,13 @@ function collectNestedHookCommands(hooksJsonObj) {
   const commands = [];
   if (!hooksJsonObj || typeof hooksJsonObj !== 'object') return commands;
 
-  for (const eventName of ['PostToolUse', 'AfterTool']) {
+  for (const eventName of ['PostToolUse', 'AfterTool', 'UserPromptSubmit', 'BeforeAgent']) {
     const groups = hooksJsonObj?.hooks?.[eventName];
     if (!Array.isArray(groups)) continue;
     for (const group of groups) {
       for (const h of group?.hooks || []) {
         if (isSkilltallyHandler(h) && typeof h?.command === 'string') {
-          commands.push(h.command);
+          if (!commands.includes(h.command)) commands.push(h.command);
         }
       }
     }

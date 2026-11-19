@@ -7,6 +7,7 @@ import {
   getPackageRoot,
   isSkilltallyHandler,
   mergePostToolUseHook,
+  mergeUserPromptSubmitHook,
   readJsonObject,
   removeSkilltallyHooks,
   syncRuntime,
@@ -57,59 +58,80 @@ export function hasCodexPluginInstalled(homeDir = homedir()) {
 
 export function checkCodexHookTrust(homeDir = homedir()) {
   const hooksPath = join(homeDir, '.codex', 'hooks.json');
-  let userHookPos = null;
+  const requiredHooks = [];
   try {
     const doc = readJsonObject(hooksPath);
-    const groups = doc?.hooks?.PostToolUse || [];
-    for (let gi = 0; gi < groups.length && !userHookPos; gi++) {
-      const handlers = groups[gi]?.hooks;
-      if (!Array.isArray(handlers)) continue;
-      for (let hi = 0; hi < handlers.length; hi++) {
-        if (isSkilltallyHandler(handlers[hi])) {
-          userHookPos = { groupIdx: gi, handlerIdx: hi };
-          break;
+    for (const [eventName, snakeName] of [
+      ['PostToolUse', 'post_tool_use'],
+      ['UserPromptSubmit', 'user_prompt_submit'],
+    ]) {
+      const groups = doc?.hooks?.[eventName] || [];
+      for (let gi = 0; gi < groups.length; gi++) {
+        const handlers = groups[gi]?.hooks;
+        if (!Array.isArray(handlers)) continue;
+        let foundInEvent = false;
+        for (let hi = 0; hi < handlers.length; hi++) {
+          if (isSkilltallyHandler(handlers[hi])) {
+            requiredHooks.push({
+              snakeName,
+              groupIdx: gi,
+              handlerIdx: hi,
+              exactKey: `hooks.json:${snakeName}:${gi}:${hi}`,
+              legacyRe: new RegExp(`:hooks\\.json:${snakeName}(?:"|'|])`),
+            });
+            foundInEvent = true;
+            break;
+          }
         }
+        if (foundInEvent) break;
       }
     }
   } catch {}
 
   const hasPlugin = hasCodexPluginInstalled(homeDir);
-  if (!userHookPos && !hasPlugin) return 'unknown';
+  if (requiredHooks.length === 0 && !hasPlugin) return 'unknown';
 
   const raw = readCodexToml(homeDir);
-  if (!raw) return userHookPos ? 'untrusted' : 'unknown';
+  if (!raw) return requiredHooks.length > 0 ? 'untrusted' : 'unknown';
 
-  const exactHookKey = userHookPos
-    ? `hooks.json:post_tool_use:${userHookPos.groupIdx}:${userHookPos.handlerIdx}`
-    : null;
-
-  let inRelevantState = false;
-  let sawSection = false;
-  let sawTrustedHash = false;
+  const stateSections = [];
+  let currentSection = null;
 
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.replace(/#.*$/, '').trim();
     if (!trimmed) continue;
     if (trimmed.startsWith('[')) {
-      const matchesSkilltally = trimmed.includes('skilltally');
-      const matchesUserHook =
-        exactHookKey !== null &&
-        (trimmed.includes(exactHookKey) || /:hooks\.json:post_tool_use(?:"|'|])/.test(trimmed));
-      if (/^\[hooks\.state\./.test(trimmed) && (matchesSkilltally || matchesUserHook)) {
-        inRelevantState = true;
-        sawSection = true;
+      if (/^\[hooks\.state\./.test(trimmed)) {
+        currentSection = { header: trimmed, hasTrustedHash: false };
+        stateSections.push(currentSection);
       } else {
-        inRelevantState = false;
+        currentSection = null;
       }
       continue;
     }
-    if (inRelevantState && /^trusted_hash\s*=/.test(trimmed)) {
-      sawTrustedHash = true;
+    if (currentSection && /^trusted_hash\s*=/.test(trimmed)) {
+      currentSection.hasTrustedHash = true;
     }
   }
 
-  if (sawSection) return sawTrustedHash ? 'trusted' : 'untrusted';
-  return userHookPos ? 'untrusted' : 'unknown';
+  if (requiredHooks.length > 0) {
+    for (const req of requiredHooks) {
+      const matching = stateSections.filter(
+        (s) =>
+          s.header.includes('skilltally') ||
+          s.header.includes(req.exactKey) ||
+          req.legacyRe.test(s.header)
+      );
+      if (!matching.some((s) => s.hasTrustedHash)) return 'untrusted';
+    }
+    return 'trusted';
+  }
+
+  const pluginSections = stateSections.filter((s) => s.header.includes('skilltally'));
+  if (pluginSections.length > 0) {
+    return pluginSections.some((s) => s.hasTrustedHash) ? 'trusted' : 'untrusted';
+  }
+  return 'unknown';
 }
 
 export function installCodex({
@@ -131,13 +153,22 @@ export function installCodex({
   const command = `node "${runtime.target.replace(/\\/g, '/')}" --host codex`;
   const hooksPath = join(homeDir, '.codex', 'hooks.json');
   const doc = readJsonObject(hooksPath);
-  const { nextDoc, changed, action } = mergePostToolUseHook(doc, {
+  const postRes = mergePostToolUseHook(doc, {
     matcher: 'exec|exec_command|shell|shell_command|local_shell|Bash',
     command,
     async: true,
     timeout: 5,
     statusMessage: 'skilltally',
   });
+  const promptRes = mergeUserPromptSubmitHook(postRes.nextDoc, {
+    command,
+    async: true,
+    timeout: 5,
+    statusMessage: 'skilltally',
+  });
+  const nextDoc = promptRes.nextDoc;
+  const changed = postRes.changed || promptRes.changed;
+  const action = postRes.action === 'added' && promptRes.action === 'added' ? 'added' : 'updated';
 
   let backup = null;
   if (changed) {
@@ -152,7 +183,7 @@ export function installCodex({
     status: changed ? (action === 'added' ? 'installed' : 'updated') : 'unchanged',
     target: hooksPath,
     backup,
-    note: 'Run codex and open /hooks to review and trust the skilltally PostToolUse hook.',
+    note: 'Run codex and open /hooks to review and trust the skilltally hooks.',
   };
 }
 

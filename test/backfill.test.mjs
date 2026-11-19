@@ -73,12 +73,42 @@ test('backfills Antigravity (including truncated_fields and antigravity-ide), Co
             arguments: JSON.stringify({ cmd: 'cat /Users/tester/.agents/skills/zst-skill/SKILL.md' }),
           },
         }),
+        JSON.stringify({
+          timestamp: '2026-10-01T10:02:00Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            id: 'msg_u1',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: '[$explicit-skill](/Users/tester/.agents/skills/explicit-skill/SKILL.md) run task',
+              },
+            ],
+          },
+        }),
+        JSON.stringify({
+          timestamp: '2026-10-01T10:02:00Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            id: 'msg_u2',
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: '<skill>\n<name>explicit-skill</name>\n<path>/Users/tester/.agents/skills/explicit-skill/SKILL.md</path>\n</skill>',
+              },
+            ],
+          },
+        }),
       ].join('\n');
       writeFileSync(
         join(archived, 'rollout-2026-10-01T10-00-00-sess-zst-1.jsonl.zst'),
         zlib.zstdCompressSync(Buffer.from(zstContent, 'utf8'))
       );
-      expectedCodexEvents = 4;
+      expectedCodexEvents = 5;
     }
 
     // Claude project transcript

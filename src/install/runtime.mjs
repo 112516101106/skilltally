@@ -103,6 +103,7 @@ function handlersEqual(a, b) {
 export function mergeEventHook(doc, eventName, { matcher, handler }) {
   const nextDoc = structuredClone(doc && typeof doc === 'object' ? doc : {});
   const desired = { ...handler };
+  const normalizedMatcher = matcher ?? undefined;
 
   if (!nextDoc.hooks || typeof nextDoc.hooks !== 'object' || Array.isArray(nextDoc.hooks)) {
     nextDoc.hooks = {};
@@ -116,7 +117,7 @@ export function mergeEventHook(doc, eventName, { matcher, handler }) {
     for (const h of group.hooks) {
       if (isSkilltallyHandler(h)) {
         existingCount += 1;
-        if (group.matcher === matcher && handlersEqual(h, desired)) {
+        if ((group.matcher ?? undefined) === normalizedMatcher && handlersEqual(h, desired)) {
           exactMatch = true;
         }
       }
@@ -137,7 +138,7 @@ export function mergeEventHook(doc, eventName, { matcher, handler }) {
   }
 
   cleaned.push({
-    matcher,
+    ...(normalizedMatcher !== undefined ? { matcher: normalizedMatcher } : {}),
     hooks: [desired],
   });
   nextDoc.hooks[eventName] = cleaned;
@@ -155,6 +156,22 @@ export function mergePostToolUseHook(
 ) {
   return mergeEventHook(doc, 'PostToolUse', {
     matcher,
+    handler: {
+      type: 'command',
+      command,
+      ...(async ? { async: true } : {}),
+      timeout,
+      statusMessage,
+    },
+  });
+}
+
+export function mergeUserPromptSubmitHook(
+  doc,
+  { command, async = true, timeout = 5, statusMessage = 'skilltally' }
+) {
+  return mergeEventHook(doc, 'UserPromptSubmit', {
+    matcher: undefined,
     handler: {
       type: 'command',
       command,
@@ -206,5 +223,18 @@ export function removeSkilltallyHooksForEvent(doc, eventName) {
 }
 
 export function removeSkilltallyHooks(doc) {
-  return removeSkilltallyHooksForEvent(doc, 'PostToolUse');
+  let current = structuredClone(doc && typeof doc === 'object' ? doc : {});
+  let totalRemoved = 0;
+  const eventNames =
+    current?.hooks && typeof current.hooks === 'object' && !Array.isArray(current.hooks)
+      ? Object.keys(current.hooks)
+      : [];
+  for (const eventName of eventNames) {
+    const res = removeSkilltallyHooksForEvent(current, eventName);
+    if (res.changed) {
+      current = res.nextDoc;
+      totalRemoved += res.removedCount;
+    }
+  }
+  return { nextDoc: current, changed: totalRemoved > 0, removedCount: totalRemoved };
 }
