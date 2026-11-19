@@ -41,7 +41,7 @@ export function canonicalizeEvent(ev, inventoryIndex = null, aliases = {}) {
   };
 }
 
-export function dedupeEvents(events, windowMs = 5000) {
+export function dedupeEvents(events, windowMs = 30_000) {
   // Prioritize real-time hook events over backfill events when deduplicating.
   const ordered = [
     ...events.filter((e) => e.origin === 'hook'),

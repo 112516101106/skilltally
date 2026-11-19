@@ -164,6 +164,35 @@ test('detects Claude Skill tool, Gemini activate_skill, Codex exec, and Windows 
   assert.equal(geminiMulti.length, 1);
   assert.equal(geminiMulti[0].skill, 'seo-audit');
   assert.equal(geminiMulti[0].via, 'read');
+
+  // Chunk 1 reads are recorded across all 4 providers
+  const chunk1Cases = [
+    ['read_file', { Path: '"/Users/tester/.gemini/config/skills/find-skills/SKILL.md"', StartLine: '1', EndLine: '100' }],
+    ['Read', { file_path: '/Users/tester/.claude/skills/find-skills/SKILL.md', offset: 1, limit: 100 }],
+    ['read_file', { file_path: '/Users/tester/.gemini/skills/find-skills/SKILL.md', start_line: 1, end_line: 100 }],
+    ['exec_command', { cmd: "sed -n '1,220p' /Users/tester/.agents/skills/find-skills/SKILL.md" }],
+    ['Bash', { command: 'tail -n +1 /Users/tester/.agents/skills/find-skills/SKILL.md' }],
+  ];
+  for (const [tool, args] of chunk1Cases) {
+    const res = detectSkillCalls({ tool, args, homeDir: '/Users/tester' });
+    assert.equal(res.length, 1, `Expected 1 hit for chunk-1 ${tool} ${JSON.stringify(args)}`);
+  }
+
+  // Continuation / paginated chunks are ignored across all 4 providers
+  const continuationCases = [
+    ['read_file', { Path: '"/Users/tester/.gemini/config/skills/find-skills/SKILL.md"', StartLine: '100', EndLine: '141' }],
+    ['read_file', { Path: '"/Users/tester/.gemini/config/skills/find-skills/SKILL.md"', ByteOffset: 512 }],
+    ['Read', { file_path: '/Users/tester/.claude/skills/find-skills/SKILL.md', offset: 100, limit: 100 }],
+    ['read_file', { file_path: '/Users/tester/.gemini/skills/find-skills/SKILL.md', start_line: 101, end_line: 200 }],
+    ['exec_command', { cmd: "sed -n '221,520p' /Users/tester/.agents/skills/find-skills/SKILL.md" }],
+    ['exec_command', { cmd: 'tail -n 50 /Users/tester/.agents/skills/find-skills/SKILL.md' }],
+    ['Bash', { command: 'head -n 200 /Users/tester/.agents/skills/find-skills/SKILL.md | tail -n 100' }],
+    ['exec_command', { cmd: "awk 'NR>=100 && NR<=200' /Users/tester/.agents/skills/find-skills/SKILL.md" }],
+  ];
+  for (const [tool, args] of continuationCases) {
+    const res = detectSkillCalls({ tool, args, homeDir: '/Users/tester' });
+    assert.equal(res.length, 0, `Expected 0 hits for continuation ${tool} ${JSON.stringify(args)}`);
+  }
 });
 
 test('resolveSource handles plugin cache marketplace hierarchy and personal vs project precedence', () => {

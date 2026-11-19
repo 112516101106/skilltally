@@ -28,11 +28,54 @@ const CLAUDE_SKILL_BASEDIR_RE =
 
 const PATH_KEYS = ['Path', 'AbsolutePath', 'TargetFile', 'file_path', 'path', 'absolute_path'];
 const ARRAY_PATH_KEYS = ['paths', 'include', 'files'];
+const LINE_START_KEYS = ['StartLine', 'start_line', 'offset'];
+const BYTE_OFFSET_KEYS = ['ByteOffset', 'byte_offset'];
 const CMD_KEYS = ['CommandLine', 'command', 'cmd', 'input', 'argv'];
 const WRITE_TOOL_RE = /^(write|edit|replace|apply_patch|multiedit|notebookedit|create_file|delete_file)/i;
 const READ_CMD_RE = /^(cat|sed|head|tail|less|more|bat|nl|awk|type|Get-Content)\b/i;
 const MUTATE_CMD_RE = /(?:^|\s)(?:sed|awk)\s+(?:[^\n]*\s)?(?:-i\S*|--in-place\b)|>{1,2}\s*[^\s]*SKILL\.md/i;
 const CODEX_EXEC_CMD_RE = /\bcmd\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
+const DEDUPE_WINDOW_MS = 30_000;
+
+function isContinuationReadArgs(safeArgs) {
+  for (const key of LINE_START_KEYS) {
+    const raw = safeArgs[key];
+    if (raw === undefined || raw === null) continue;
+    const unwrapped = unwrapArg(raw);
+    if (typeof unwrapped === 'string' && unwrapped.trim() === '') continue;
+    const n = Number(unwrapped);
+    if (Number.isFinite(n) && n > 1) return true;
+  }
+  for (const key of BYTE_OFFSET_KEYS) {
+    const raw = safeArgs[key];
+    if (raw === undefined || raw === null) continue;
+    const unwrapped = unwrapArg(raw);
+    if (typeof unwrapped === 'string' && unwrapped.trim() === '') continue;
+    const n = Number(unwrapped);
+    if (Number.isFinite(n) && n > 0) return true;
+  }
+  return false;
+}
+
+function isContinuationShellSegment(seg) {
+  const mSed = seg.match(/\bsed\b[^;&\n]*?(?:^|[\s'"=])(\d+)(?:\s*,\s*(?:\d+|\$|\+\d+))?p(?=['"\s;|&]|$)/i);
+  if (mSed && Number(mSed[1]) > 1) return true;
+
+  if (
+    (/^tail\b/i.test(seg) || /\|\s*tail\b/i.test(seg)) &&
+    !/\btail\s+(?:-[^\s]+\s+)*-n\s*\+?[01]\b/i.test(seg)
+  ) {
+    return true;
+  }
+
+  const mAwkGe = seg.match(/\bawk\b[^;&\n]*?\bNR\s*>=\s*(\d+)/i);
+  if (mAwkGe && Number(mAwkGe[1]) > 1) return true;
+
+  const mAwkGt = seg.match(/\bawk\b[^;&\n]*?\bNR\s*>\s*(\d+)/i);
+  if (mAwkGt && Number(mAwkGt[1]) >= 1) return true;
+
+  return false;
+}
 
 function argValue(flag, argv = process.argv) {
   const i = argv.indexOf(flag);
@@ -263,6 +306,8 @@ export function detectSkillCalls({
     }
   };
 
+  if (isContinuationReadArgs(safeArgs)) return [];
+
   for (const key of PATH_KEYS) {
     if (typeof safeArgs[key] === 'string') {
       collectFromText(unwrapArg(safeArgs[key]), 'read');
@@ -299,6 +344,7 @@ export function detectSkillCalls({
         const seg = rawSeg.trim().replace(/^(?:[A-Za-z_]\w*=\S+\s+)+/, '');
         if (!READ_CMD_RE.test(seg)) continue;
         if (MUTATE_CMD_RE.test(seg)) continue;
+        if (isContinuationShellSegment(seg)) continue;
         collectFromText(seg, 'shell_read');
       }
     }
@@ -332,6 +378,33 @@ function maybeRotateEvents(home, eventsPath) {
   } catch {}
 }
 
+function readRecentSessionSkills(eventsPath, host, sessionId, nowMs) {
+  const recent = new Set();
+  if (!sessionId || !existsSync(eventsPath)) return recent;
+  try {
+    const raw = readFileSync(eventsPath, 'utf8');
+    const lines = raw.trim().split('\n');
+    const tail = lines.slice(-64);
+    for (const line of tail) {
+      if (!line) continue;
+      let ev;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (ev.ok === false || ev.host !== host || ev.session_id !== sessionId || !ev.skill) {
+        continue;
+      }
+      const evMs = Date.parse(ev.ts);
+      if (Number.isFinite(evMs) && Math.abs(nowMs - evMs) <= DEDUPE_WINDOW_MS) {
+        recent.add(ev.skill);
+      }
+    }
+  } catch {}
+  return recent;
+}
+
 export function main() {
   const hostFlag = argValue('--host') ?? 'auto';
   const raw = readFileSync(0, 'utf8');
@@ -354,11 +427,23 @@ export function main() {
   const hits = detectSkillCalls({ tool: n.tool, args: n.args, prompt: n.prompt, cwd: n.cwd });
   if (hits.length === 0) return;
 
+  const eventsPath = join(home, 'events.jsonl');
+  const ts = new Date().toISOString();
+  const nowMs = Date.parse(ts);
+  const recentSkills = !n.failed ? readRecentSessionSkills(eventsPath, host, n.sessionId, nowMs) : new Set();
+  const seenBatch = new Set();
+  const uniqueHits = [];
+  for (const h of hits) {
+    if (n.sessionId && (recentSkills.has(h.skill) || seenBatch.has(h.skill))) continue;
+    seenBatch.add(h.skill);
+    uniqueHits.push(h);
+  }
+  if (uniqueHits.length === 0) return;
+
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const storeCwd = readStoreCwdFlag(home);
-  const ts = new Date().toISOString();
 
-  const lines = hits.map((h, idx) =>
+  const lines = uniqueHits.map((h, idx) =>
     JSON.stringify({
       v: 1,
       id: `${host}:${n.sessionId ?? '-'}:${n.callId ?? ts}#${idx}`,
@@ -379,7 +464,6 @@ export function main() {
     })
   );
 
-  const eventsPath = join(home, 'events.jsonl');
   maybeRotateEvents(home, eventsPath);
   appendFileSync(eventsPath, lines.join('\n') + '\n', { mode: 0o600 });
 }

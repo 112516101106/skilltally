@@ -142,3 +142,60 @@ test(
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('bin/track.mjs deduplicates same-session reads within 30s and ignores paginated continuation reads', () => {
+  const home = makeTempHome();
+  try {
+    const env = {
+      ...process.env,
+      HOME: '/Users/tester',
+      USERPROFILE: '/Users/tester',
+      SKILLTALLY_HOME: home,
+    };
+    const makeRead = (id, startLine, endLine) =>
+      JSON.stringify({
+        toolCall: {
+          id,
+          name: 'read_file',
+          args: {
+            Path: '"/Users/tester/.gemini/config/skills/find-skills/SKILL.md"',
+            StartLine: startLine,
+            EndLine: endLine,
+          },
+        },
+        conversationId: 'conv-dedupe-001',
+        hookEventName: 'PostToolUse',
+        cwd: '/Users/tester/projects/demo-app',
+      });
+
+    // Chunk 1 -> written (1 line)
+    const r1 = spawnSync(process.execPath, [trackScript, '--host', 'antigravity'], {
+      input: makeRead('call_1', 1, 100),
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(r1.status, 0);
+
+    // Chunk 2 (continuation StartLine=100) -> ignored (still 1 line)
+    const rCont = spawnSync(process.execPath, [trackScript, '--host', 'antigravity'], {
+      input: makeRead('call_2', 100, 141),
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(rCont.status, 0);
+
+    // Repeat full read in same session within 30s -> deduped at write-time (still 1 line)
+    const rDup = spawnSync(process.execPath, [trackScript, '--host', 'antigravity'], {
+      input: makeRead('call_3', 1, 100),
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(rDup.status, 0);
+
+    const lines = readFileSync(join(home, 'events.jsonl'), 'utf8').trim().split('\n');
+    assert.equal(lines.length, 1);
+    assert.equal(JSON.parse(lines[0]).skill, 'find-skills');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

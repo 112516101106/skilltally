@@ -32,7 +32,7 @@ function getVersion() {
   try {
     return JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version;
   } catch {
-    return '1.0.2';
+    return '1.0.3';
   }
 }
 

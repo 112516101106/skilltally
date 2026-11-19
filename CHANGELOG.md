@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-11-19
+
+### Fixed
+- Ignore paginated continuation reads across all 4 providers (`StartLine`/`start_line`/`offset > 1`, `ByteOffset`/`byte_offset > 0`, `sed -n 'N,Mp'` with `N > 1`, non-`+1` `tail`, and `awk` `NR >= N`/`NR > N`).
+- Deduplicate same-session `(host, session_id, skill)` hook writes within a 30-second window at capture time in `bin/track.mjs`, and increase the default `dedupeEvents` query window from 5 seconds to 30 seconds in `src/core/normalize.mjs`.
+
 ## [1.0.2] - 2026-11-19
 
 ### Added
