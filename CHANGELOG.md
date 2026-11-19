@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-20
+
+### Added
+- **Interactive HTML Dashboard (`skilltally dashboard`)**: Self-contained, offline zero-dependency HTML report featuring an interactive SVG Treemap (Context Tax vs. Activations), Timeline chart, Trigger/Host/Project/Model distribution charts, SVG workflow transition diagram, optimization tabs, sortable/filterable skills explorer, and Mermaid snippet generator (`pie`, `xychart-beta`, `flowchart LR`).
+- **Skill Chains & Co-occurrence (`skilltally chains`)**: Session-level analysis of ordered skill transitions (`A -> B` with conditional probability and average gap), 3-step workflows, and co-occurring pairs with Jaccard similarity.
+- **Optimization Insights (`skilltally insights`) & Enriched `stats`/`unused`**:
+  - 14-day Unicode sparklines (`▁▂▃▄▅▆▇█`) in `stats` rows and a Context Tax meter bar in `unused`.
+  - Trigger mode (`via`) auto vs. manual breakdown and identification of manual-only skills needing sharper `SKILL.md` descriptions.
+  - Project-affinity analysis flagging global/plugin skills used exclusively in a single project.
+  - Cumulative context ROI (`tokenCostPerActivation`) and per-model usage breakdown.
+- **Safe Actionable Pruning (`skilltally prune`)**: Disable 100%-unused plugins or specific unused skills in Antigravity (`~/.gemini/config/config.json`) and Codex (`~/.codex/config.toml`) with `--dry-run` preview and automatic backups.
+- **Zero-Dependency Stdio MCP Server (`skilltally mcp`)**: Exposes `skilltally_stats`, `skilltally_unused`, `skilltally_timeline`, `skilltally_chains`, and `skilltally_insights` over newline-delimited or `Content-Length`-framed JSON-RPC 2.0.
+
 ## [1.0.3] - 2026-11-19
 
 ### Fixed

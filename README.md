@@ -71,11 +71,12 @@ If you prefer native plugin managers over `npx skilltally install`:
 ```text
 skilltally — last 30d (2026-10-20 -> 2026-11-19)
 hosts: antigravity 35 · codex 12
+triggers: auto 38 · manual 9
 
-   #  skill                     activations  reads  last used         hosts
-   1  requesting-code-review              8     10  2026-11-12 14:03  antigravity, codex
-   2  systematic-debugging                5      9  2026-11-10 09:41  codex
-   3  agent-browser                       3      4  2026-11-05 12:18  antigravity, codex
+   #  skill                     activations  reads  last used         hosts               trend (14d)
+   1  requesting-code-review              8     10  2026-11-12 14:03  antigravity, codex  ··▁·▃·█··▃·▁··
+   2  systematic-debugging                5      9  2026-11-10 09:41  codex               ····▁··█··▁···
+   3  agent-browser                       3      4  2026-11-05 12:18  antigravity, codex  ··█···········
 
 installed: 214 · used: 22 · unused: 192  ->  run `skilltally unused`
 ```
@@ -84,6 +85,7 @@ installed: 214 · used: 22 · unused: 192  ->  run `skilltally unused`
 
 ```text
 Unused enabled skills — last 90d (2026-08-21 -> 2026-11-19): 192 (48.2 KB ≈ ~12,340 tok/session)
+context tax: [████████████░░░░] 76% unused (~12,340 / ~16,200 tok/session)
 
   plugin:science       47 skills   14.8 KB  ~ 3818 tok/session
     alphagenome-atlas-website-links, alphagenome-single-variant-analysis, … (+41)
@@ -101,12 +103,17 @@ Tip: disabling an unused plugin removes all of its skill descriptions from every
 | `uninstall` | Remove `skilltally` hooks (preserves all other user hooks) | `--host ...`, `--purge`, `--dry-run`, `--json` |
 | `doctor` | Check Node version, hook paths, Codex trust, events, and live self-test | `--json` |
 | `backfill` | Import historical skill reads/invocations from local logs | `--host ...`, `--since DATE`, `--dry-run`, `--json` |
-| `stats` | Usage table sorted by `activations` (unique `session × skill`) | `--since 30d\|all\|YYYY-MM-DD`, `--host`, `--project`, `--by-source`, `--metric reads`, `--json` |
+| `stats` | Usage table sorted by `activations` with 14-day sparklines and trigger ratio | `--since 30d\|all\|YYYY-MM-DD`, `--host`, `--project`, `--by-source`, `--metric reads`, `--json` |
 | `top` | Top `N` skills | `-n 20`, plus `stats` flags |
 | `unused` | Enabled installed skills with 0 activations and Context Tax breakdown | `--since 90d`, `--host`, `--all`, `--json` |
 | `timeline` | ASCII usage bar chart over time | `--skill <name>`, `--by day\|week\|month`, `--since`, `--host`, `--project`, `--json` |
+| `chains` | Skill transition chains (`A -> B`), 3-step workflows, and co-occurring pairs | `--since`, `--host`, `--project`, `-n 20`, `--json` |
+| `insights` | Context ROI, manual-only triggers, single-project scoping candidates, model stats | `--since`, `--host`, `--project`, `--json` |
+| `dashboard` | Generate self-contained offline HTML dashboard (SVG Treemap, chains, Mermaid) | `-o <file>`, `--since`, `--host`, `--project`, `--open`, `--json` |
+| `prune` | Safely disable 100%-unused plugins or specific unused skills (with backups) | `--since 90d`, `--host all\|antigravity\|codex`, `--plugin <name>`, `--skill <name>`, `--dry-run`, `--json` |
 | `export` | Export deduplicated events as JSON or RFC-4180 CSV | `--format json\|csv`, `-o <file>`, `--since`, `--host`, `--project`, `--include-failed` |
 | `inventory` | List installed skills, sources, hosts, enabled state, and description sizes | `--no-project`, `--json` |
+| `mcp` | Start zero-dependency stdio MCP server (`skilltally_*` tools) | — |
 | `debug` | Toggle opt-in raw stdin logging (`on \| off \| status`) | `--json` |
 
 ## Privacy, Performance & Reliability

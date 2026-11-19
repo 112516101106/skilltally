@@ -20,11 +20,11 @@ Prefer the fastest available invocation:
 
 ## Common commands
 
-1. **Overall usage & top skills** (default 30 days):
+1. **Overall usage, sparklines & top skills** (default 30 days):
    ```bash
    skilltally stats --since 30d
    ```
-   Add `--json` for structured output, `--host <name>` to filter by host, or `--by-source` to separate duplicate skill names across sources.
+   Add `--json` for structured output (includes 14d `sparkline`, `via` trigger ratio, `tokenCostPerActivation`, and `insights`), `--host <name>` to filter by host, or `--by-source` to separate duplicate skill names across sources.
 2. **Top N skills**:
    ```bash
    skilltally top -n 20 --since 30d --metric activations
@@ -33,27 +33,42 @@ Prefer the fastest available invocation:
    ```bash
    skilltally unused --since 90d
    ```
-   Shows enabled installed skills with zero activations in the window, grouped by source with estimated `KB` and `~tokens/session` saved by disabling unused plugins.
-4. **Timeline & export**:
+   Shows enabled installed skills with zero activations in the window, Context Tax meter, and estimated `KB` / `~tokens/session` saved by disabling unused plugins.
+4. **Actionable optimization insights & workflow chains**:
+   ```bash
+   skilltally insights --since 30d
+   skilltally chains --since 30d
+   ```
+   - `insights` surfaces Context ROI (`~tok/activation`), manual-only skills (`0%` auto-match — sharpen `SKILL.md` descriptions), single-project global skills (move to `.agents/skills` or `.claude/skills`), and per-model breakdown.
+   - `chains` reveals `A -> B` transitions, 3-step workflows, and co-occurring skill pairs within sessions.
+5. **Interactive HTML Dashboard & visualizations**:
+   ```bash
+   skilltally dashboard --since 30d --open
+   ```
+   Generates a self-contained, zero-dependency HTML report (`~/.skilltally/dashboard.html` or `-o <file>`) with an interactive Context Tax Treemap, timeline, workflow flow diagram, filterable table, and Mermaid diagram snippets (`pie`, `xychart-beta`, `flowchart LR`).
+   When presenting analytics directly in chat, you can also run `--json` subcommands and render **Mermaid diagrams** (`pie`, `xychart-beta`, `flowchart LR`) or interactive HTML widgets from the JSON output.
+6. **Timeline & export**:
    ```bash
    skilltally timeline --skill <name> --by week
    skilltally export --format csv -o skilltally-events.csv
    ```
-5. **Import history from local logs** (Antigravity, Codex, Claude Code, Gemini CLI):
+7. **Preview safe plugin/skill pruning**:
+   ```bash
+   skilltally prune --since 90d --dry-run
+   ```
+8. **Import history, inspect inventory, verify hooks & MCP server**:
    ```bash
    skilltally backfill
-   ```
-6. **Inspect installed inventory & verify hooks**:
-   ```bash
    skilltally inventory --json
    skilltally doctor
+   skilltally mcp
    ```
 
 If `stats` shows zero events, run `skilltally doctor` to check hook installation, then suggest `skilltally install` and `skilltally backfill`.
 
 ## Rules
 
-- **Never delete, uninstall, or disable skills or plugins yourself**; present the findings and let the user decide.
+- **Never delete, uninstall, or disable skills or plugins yourself** (never run `skilltally prune` without `--dry-run`) unless the user explicitly asks you to disable specific items; present the findings and let the user decide.
 - Report **activations** (unique `session × skill` pairs) as the primary metric and **reads** (total invocations) as secondary.
 - When reporting unused skills or plugins, include the **Context Tax** (`KB` and `~tokens/session`) so the user knows the context benefit of disabling a plugin.
 - Always state the time window (`--since`) and which hosts contributed data.

@@ -24,10 +24,25 @@ function formatHostLine(hosts) {
   return entries.map(([h, n]) => `${h} ${n}`).join(' · ');
 }
 
+export function renderMeter(ratio, width = 16) {
+  const r = Number.isFinite(ratio) ? Math.max(0, Math.min(1, ratio)) : 0;
+  const filled = Math.round(r * width);
+  return '█'.repeat(filled) + '░'.repeat(Math.max(0, width - filled));
+}
+
 export function formatStats(report, { limit = null, heading = 'skilltally', bySource = false } = {}) {
   const lines = [];
   lines.push(`${heading} — ${formatWindow(report.window)}`);
   lines.push(`hosts: ${formatHostLine(report.totals.hosts)}`);
+  if (
+    report.totals?.via &&
+    Object.keys(report.totals.via).length > 0 &&
+    ((report.totals.autoReads || 0) > 0 || (report.totals.manualReads || 0) > 0)
+  ) {
+    lines.push(
+      `triggers: auto ${report.totals.autoReads || 0} · manual ${report.totals.manualReads || 0}`
+    );
+  }
   lines.push('');
 
   const displayRows = limit && limit > 0 ? report.rows.slice(0, limit) : report.rows;
@@ -39,14 +54,15 @@ export function formatStats(report, { limit = null, heading = 'skilltally', bySo
       10,
       ...displayRows.map((r) => (bySource ? `${r.skill} (${r.source})` : r.skill).length)
     );
+    const hostsCol = Math.max(5, ...displayRows.map((r) => (r.hosts || []).join(', ').length));
     const rankW = Math.max(2, String(displayRows.length).length + 1);
     lines.push(
-      ` ${padLeft('#', rankW)}  ${padRight('skill', skillCol)}  ${padLeft('activations', 11)}  ${padLeft('reads', 5)}  ${padRight('last used', 16)}  hosts`
+      ` ${padLeft('#', rankW)}  ${padRight('skill', skillCol)}  ${padLeft('activations', 11)}  ${padLeft('reads', 5)}  ${padRight('last used', 16)}  ${padRight('hosts', hostsCol)}  trend (14d)`
     );
     displayRows.forEach((r, idx) => {
       const label = bySource ? `${r.skill} (${r.source})` : r.skill;
       lines.push(
-        ` ${padLeft(idx + 1, rankW)}  ${padRight(label, skillCol)}  ${padLeft(r.activations, 11)}  ${padLeft(r.reads, 5)}  ${padRight(formatDateCompact(r.last_used), 16)}  ${r.hosts.join(', ')}`
+        ` ${padLeft(idx + 1, rankW)}  ${padRight(label, skillCol)}  ${padLeft(r.activations, 11)}  ${padLeft(r.reads, 5)}  ${padRight(formatDateCompact(r.last_used), 16)}  ${padRight((r.hosts || []).join(', '), hostsCol)}  ${r.sparkline || '··············'}`
       );
     });
     if (limit && report.rows.length > limit) {
@@ -72,6 +88,13 @@ export function formatUnused(report, { showAll = false } = {}) {
   lines.push(
     `Unused enabled skills — ${formatWindow(report.window)}: ${u.total} (${kb} KB ≈ ~${u.totalEstTokens.toLocaleString()} tok/session)`
   );
+  if ((report.inventory?.enabledEstTokens || 0) > 0) {
+    const ratio = u.totalEstTokens / report.inventory.enabledEstTokens;
+    const pct = Math.round(ratio * 100);
+    lines.push(
+      `context tax: [${renderMeter(ratio, 16)}] ${pct}% unused (~${u.totalEstTokens.toLocaleString()} / ~${report.inventory.enabledEstTokens.toLocaleString()} tok/session)`
+    );
+  }
 
   if (u.total === 0) {
     lines.push('All enabled installed skills were used in this window.');
@@ -268,4 +291,202 @@ export function formatDebug(status) {
     lines.push('Warning: debug mode logs raw hook stdin payloads (may include shell commands). Run `skilltally debug off` when done.');
   }
   return lines.join('\n');
+}
+
+function formatGapSeconds(sec) {
+  if (!Number.isFinite(sec) || sec <= 0) return '0s';
+  if (sec < 60) return `${sec}s`;
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return s > 0 ? `${m}m${s}s` : `${m}m`;
+}
+
+export function formatChains(chainsReport) {
+  const lines = [];
+  lines.push(`skilltally chains — ${formatWindow(chainsReport.window)}`);
+  lines.push(
+    `sessions: ${chainsReport.totals.sessions} · multi-skill: ${chainsReport.totals.multiSkillSessions} · transitions: ${chainsReport.totals.transitions} · pairs: ${chainsReport.totals.pairs}`
+  );
+  lines.push('');
+
+  if (
+    chainsReport.transitions.length === 0 &&
+    chainsReport.pairs.length === 0 &&
+    chainsReport.sequences.length === 0
+  ) {
+    lines.push('No multi-skill session chains found in this window.');
+    return lines.join('\n');
+  }
+
+  if (chainsReport.transitions.length > 0) {
+    lines.push('Top ordered transitions (A -> B):');
+    const labels = chainsReport.transitions.map((t) => `${t.from} -> ${t.to}`);
+    const labelW = Math.max(16, ...labels.map((l) => l.length));
+    lines.push(
+      `  ${padRight('transition', labelW)}  ${padLeft('sessions', 8)}  ${padLeft('prob', 6)}  ${padLeft('avg gap', 8)}`
+    );
+    for (let i = 0; i < chainsReport.transitions.length; i++) {
+      const t = chainsReport.transitions[i];
+      const pct = `${Math.round((t.probability || 0) * 100)}%`;
+      lines.push(
+        `  ${padRight(labels[i], labelW)}  ${padLeft(t.sessions, 8)}  ${padLeft(pct, 6)}  ${padLeft(formatGapSeconds(t.avgGapSeconds), 8)}`
+      );
+    }
+    lines.push('');
+  }
+
+  if (chainsReport.pairs.length > 0) {
+    lines.push('Top co-occurring pairs (same session):');
+    const pairLabels = chainsReport.pairs.map((p) => `${p.skills[0]} + ${p.skills[1]}`);
+    const pairW = Math.max(16, ...pairLabels.map((l) => l.length));
+    lines.push(`  ${padRight('pair', pairW)}  ${padLeft('sessions', 8)}  ${padLeft('jaccard', 7)}`);
+    for (let i = 0; i < chainsReport.pairs.length; i++) {
+      const p = chainsReport.pairs[i];
+      lines.push(
+        `  ${padRight(pairLabels[i], pairW)}  ${padLeft(p.sessions, 8)}  ${padLeft(p.jaccard.toFixed(2), 7)}`
+      );
+    }
+    lines.push('');
+  }
+
+  if (chainsReport.sequences.length > 0) {
+    lines.push('Common 3-step workflows:');
+    const seqW = Math.max(20, ...chainsReport.sequences.map((s) => s.label.length));
+    for (const s of chainsReport.sequences) {
+      lines.push(`  ${padRight(s.label, seqW)}  ${padLeft(s.sessions, 3)} session(s)`);
+    }
+  }
+
+  return lines.join('\n').trimEnd();
+}
+
+export function formatInsights(report) {
+  const lines = [];
+  lines.push(`skilltally insights — ${formatWindow(report.window)}`);
+  lines.push(
+    `hosts: ${formatHostLine(report.totals.hosts)} · sessions: ${report.totals.sessions || 0} · skills used: ${report.totals.uniqueSkills || 0}`
+  );
+  lines.push('');
+
+  // 1. Context Tax & ROI Efficiency
+  lines.push('1. Context Tax & ROI Efficiency');
+  const enabledTok = report.inventory?.enabledEstTokens || 0;
+  const unusedTok = report.unused?.totalEstTokens || 0;
+  if (enabledTok > 0) {
+    const ratio = unusedTok / enabledTok;
+    const pct = Math.round(ratio * 100);
+    lines.push(
+      `  context tax: [${renderMeter(ratio, 18)}] ${pct}% unused (~${unusedTok.toLocaleString()} / ~${enabledTok.toLocaleString()} tok/session)`
+    );
+  } else {
+    lines.push('  No enabled skill inventory descriptions found.');
+  }
+
+  const highCost = report.insights?.highCostSkills || [];
+  if (highCost.length > 0) {
+    const w = Math.max(12, ...highCost.map((s) => s.skill.length));
+    lines.push('  Highest cumulative context cost per activation:');
+    for (const s of highCost.slice(0, 6)) {
+      lines.push(
+        `    ${padRight(s.skill, w)}  ~${padLeft(s.est_tokens, 4)} tok/sess  ${padLeft(s.activations, 4)} act  ~${s.tokenCostPerActivation.toLocaleString()} tok/activation`
+      );
+    }
+  }
+  lines.push('');
+
+  // 2. Trigger Mode Breakdown (via)
+  lines.push('2. Trigger Mode Breakdown (via)');
+  const autoReads = report.totals?.autoReads || 0;
+  const manualReads = report.totals?.manualReads || 0;
+  const totalReads = autoReads + manualReads;
+  if (totalReads > 0) {
+    const autoPct = Math.round((autoReads / totalReads) * 100);
+    const manualPct = 100 - autoPct;
+    lines.push(`  auto: ${autoReads} (${autoPct}%) · manual: ${manualReads} (${manualPct}%)`);
+    const viaEntries = Object.entries(report.totals.via || {}).sort((a, b) => b[1] - a[1]);
+    if (viaEntries.length > 0) {
+      lines.push(`  via breakdown: ${viaEntries.map(([k, v]) => `${k} ${v}`).join(' · ')}`);
+    }
+  } else {
+    lines.push('  No trigger events recorded in this window.');
+  }
+
+  const manualOnly = report.insights?.manualOnlySkills || [];
+  if (manualOnly.length > 0) {
+    lines.push('  Manual-only skills (0% auto-match — review SKILL.md description triggers):');
+    for (const s of manualOnly.slice(0, 8)) {
+      lines.push(
+        `    ${s.skill} (${s.source}) — ${s.reads} read(s), ~${s.est_tokens} tok/session`
+      );
+    }
+  }
+  lines.push('');
+
+  // 3. Project-Scoping Candidates
+  lines.push('3. Project-Scoping Candidates');
+  const projCand = report.insights?.projectScopeCandidates || [];
+  if (projCand.length > 0) {
+    lines.push('  Global/plugin skills used in only 1 project (consider moving to repo .agents/skills or .claude/skills):');
+    for (const c of projCand.slice(0, 8)) {
+      lines.push(
+        `    ${c.skill} (${c.source}) -> only in "${c.project}" (${c.activations} act, ~${c.est_tokens} tok/session)`
+      );
+    }
+  } else {
+    lines.push('  None detected (skills are either multi-project or already project-scoped).');
+  }
+
+  // 4. Model Breakdown
+  const modelEntries = Object.entries(report.totals?.models || {}).sort((a, b) => b[1] - a[1]);
+  if (modelEntries.length > 0) {
+    lines.push('');
+    lines.push('4. Model Breakdown');
+    const mw = Math.max(12, ...modelEntries.map(([m]) => m.length));
+    for (const [model, count] of modelEntries) {
+      lines.push(`  ${padRight(model, mw)}  ${padLeft(count, 5)} read(s)`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+export function formatPrune(res) {
+  const lines = [];
+  lines.push(`skilltally prune${res.dryRun ? ' (dry-run)' : ''} — ${formatWindow(res.window)}`);
+  lines.push(
+    `estimated savings: ${res.savedKb} KB (~${(res.savedTokensPerSession || 0).toLocaleString()} tok/session)`
+  );
+  lines.push('');
+
+  if (res.disabledPlugins.length === 0 && res.disabledSkills.length === 0) {
+    lines.push('No matching unused plugins or skills to disable.');
+    return lines.join('\n');
+  }
+
+  if (res.disabledPlugins.length > 0) {
+    lines.push(res.dryRun ? 'Plugins to disable:' : 'Disabled plugins:');
+    for (const p of res.disabledPlugins) {
+      lines.push(
+        `  ${padRight(p.source, 28)} [${p.host}]  ${p.skillCount} skill(s)  ~${p.estTokens} tok/session`
+      );
+    }
+    lines.push('');
+  }
+
+  if (res.disabledSkills.length > 0) {
+    lines.push(res.dryRun ? 'Skills to disable:' : 'Disabled skills:');
+    for (const s of res.disabledSkills) {
+      lines.push(`  ${padRight(s.name, 28)} [${s.host}]  ~${s.est_tokens} tok/session`);
+    }
+    lines.push('');
+  }
+
+  if (res.backups && res.backups.length > 0) {
+    lines.push('Backups:');
+    for (const b of res.backups) {
+      lines.push(`  ${b}`);
+    }
+  }
+
+  return lines.join('\n').trimEnd();
 }
