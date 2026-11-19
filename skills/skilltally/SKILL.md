@@ -34,11 +34,16 @@ Prefer the fastest available invocation:
    skilltally unused --since 90d
    ```
    Shows enabled installed skills with zero activations in the window, grouped by source with estimated `KB` and `~tokens/session` saved by disabling unused plugins.
-4. **Import history from local logs** (Antigravity, Codex, Claude Code):
+4. **Timeline & export**:
+   ```bash
+   skilltally timeline --skill <name> --by week
+   skilltally export --format csv -o skilltally-events.csv
+   ```
+5. **Import history from local logs** (Antigravity, Codex, Claude Code, Gemini CLI):
    ```bash
    skilltally backfill
    ```
-5. **Inspect installed inventory & verify hooks**:
+6. **Inspect installed inventory & verify hooks**:
    ```bash
    skilltally inventory --json
    skilltally doctor

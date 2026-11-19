@@ -211,11 +211,61 @@ export function formatDoctor(report) {
     if (h.settingsInstalled) extras.push('settings=yes');
     if (h.hooksJsonInstalled) extras.push('hooks.json=yes');
     if (h.trustStatus && h.trustStatus !== 'unknown') extras.push(`trust=${h.trustStatus}`);
+    if (h.hooksConfigDisabled) extras.push('WARNING: hooksConfig.enabled=false');
     if (h.duplicateHook) extras.push('WARNING: duplicate hook');
     if (h.hookPathValid === false) extras.push('ERROR: hook target missing on disk');
     lines.push(
       `  ${padRight(name, 12)} ${padRight(status, 14)} ${extras.join(' · ')}`.trimEnd()
     );
+  }
+  return lines.join('\n');
+}
+
+export function formatTimeline(timeline) {
+  const lines = [];
+  const label = timeline.skill ? `skilltally timeline (${timeline.skill})` : 'skilltally timeline';
+  lines.push(`${label} — by ${timeline.by}, ${formatWindow(timeline.window)}`);
+  lines.push('');
+
+  if (timeline.rows.length === 0) {
+    lines.push('No skill events found in this window.');
+    return lines.join('\n');
+  }
+
+  const maxAct = Math.max(1, ...timeline.rows.map((r) => r.activations));
+  const bucketW = Math.max(10, ...timeline.rows.map((r) => r.bucket.length));
+  const barWidth = 24;
+
+  lines.push(
+    `  ${padRight('period', bucketW)}  ${padRight('bar', barWidth)}  ${padLeft('activations', 11)}  ${padLeft('reads', 5)}  ${padLeft('skills', 6)}`
+  );
+  for (const r of timeline.rows) {
+    const filled = Math.max(1, Math.round((r.activations / maxAct) * barWidth));
+    const bar = '#'.repeat(filled);
+    lines.push(
+      `  ${padRight(r.bucket, bucketW)}  ${padRight(bar, barWidth)}  ${padLeft(r.activations, 11)}  ${padLeft(r.reads, 5)}  ${padLeft(r.uniqueSkills, 6)}`
+    );
+  }
+  lines.push('');
+  lines.push(
+    `totals: ${timeline.totals.activations} activations · ${timeline.totals.reads} reads across ${timeline.totals.buckets} ${timeline.by}(s)`
+  );
+  return lines.join('\n');
+}
+
+export function formatDebug(status) {
+  const lines = [];
+  lines.push(`skilltally debug: ${status.enabled ? 'on' : 'off'}`);
+  lines.push(`  marker: ${status.markerPath}`);
+  lines.push(
+    `  log:    ${status.logPath} (${status.logExists ? `${status.logLines} lines, ${status.logBytes} bytes` : 'absent'})`
+  );
+  if (status.deletedLog) {
+    lines.push('  cleaned: removed debug.jsonl');
+  }
+  if (status.enabled) {
+    lines.push('');
+    lines.push('Warning: debug mode logs raw hook stdin payloads (may include shell commands). Run `skilltally debug off` when done.');
   }
   return lines.join('\n');
 }

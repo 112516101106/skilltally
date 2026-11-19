@@ -8,6 +8,7 @@ import { readAllEvents } from '../core/store.mjs';
 import { detectAntigravity, getAntigravityPluginTarget } from './antigravity.mjs';
 import { detectClaude, hasClaudePluginInstalled } from './claude.mjs';
 import { checkCodexHookTrust, detectCodex, hasCodexPluginInstalled } from './codex.mjs';
+import { detectGemini } from './gemini.mjs';
 import { extractHookCommandPath, getPackageRoot, isSkilltallyHandler, readJsonObject } from './runtime.mjs';
 
 function collectSkilltallyHookCommands(hooksJsonObj) {
@@ -25,12 +26,14 @@ function collectSkilltallyHookCommands(hooksJsonObj) {
     }
   }
 
-  // Claude / Codex style: { hooks: { PostToolUse: [...] } }
-  if (Array.isArray(hooksJsonObj?.hooks?.PostToolUse)) {
-    for (const group of hooksJsonObj.hooks.PostToolUse) {
-      for (const h of group?.hooks || []) {
-        if (isSkilltallyHandler(h) && typeof h.command === 'string') {
-          commands.push(h.command);
+  // Claude / Codex / Gemini style: { hooks: { PostToolUse: [...], AfterTool: [...] } }
+  for (const eventName of ['PostToolUse', 'AfterTool']) {
+    if (Array.isArray(hooksJsonObj?.hooks?.[eventName])) {
+      for (const group of hooksJsonObj.hooks[eventName]) {
+        for (const h of group?.hooks || []) {
+          if (isSkilltallyHandler(h) && typeof h.command === 'string') {
+            commands.push(h.command);
+          }
         }
       }
     }
@@ -216,8 +219,28 @@ export function runDoctor({
     target: codexHooksPath,
   };
 
+  // Host 4: Gemini CLI
+  const geminiDetected = detectGemini(homeDir);
+  const geminiSettingsPath = join(homeDir, '.gemini', 'settings.json');
+  let geminiCmds = [];
+  let geminiHooksDisabled = false;
+  if (existsSync(geminiSettingsPath)) {
+    try {
+      const geminiDoc = readJsonObject(geminiSettingsPath);
+      geminiCmds = collectSkilltallyHookCommands(geminiDoc);
+      geminiHooksDisabled = geminiDoc?.hooksConfig?.enabled === false;
+    } catch {}
+  }
+  const gemini = {
+    detected: geminiDetected,
+    installed: geminiCmds.length > 0,
+    hookPathValid: checkCommandPathsExist(geminiCmds, dirname(geminiSettingsPath)),
+    hooksConfigDisabled: geminiHooksDisabled,
+    target: geminiSettingsPath,
+  };
+
   const selfTest = runSelfTest(pkgRoot);
-  const hosts = { antigravity, claude, codex };
+  const hosts = { antigravity, claude, codex, gemini };
   const brokenPaths = Object.values(hosts).some((h) => h.hookPathValid === false);
   const ok = nodeOk && selfTest.ok && !brokenPaths;
 

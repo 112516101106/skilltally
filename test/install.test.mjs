@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { installAntigravity, uninstallAntigravity } from '../src/install/antigravity.mjs';
 import { installClaude, uninstallClaude } from '../src/install/claude.mjs';
 import { checkCodexHookTrust, installCodex, uninstallCodex } from '../src/install/codex.mjs';
+import { installGemini, uninstallGemini } from '../src/install/gemini.mjs';
 import { runDoctor } from '../src/install/doctor.mjs';
 import { runInstall, runUninstall } from '../src/install/index.mjs';
 import { getPackageRoot } from '../src/install/runtime.mjs';
@@ -217,6 +218,62 @@ test('runInstall, runUninstall --purge, and runDoctor handle multi-host lifecycl
     assert.equal(uninst.purged, true);
     assert.equal(existsSync(dataHome), false);
     assert.equal(readdirSync(join(homeDir, '.gemini', 'config', 'plugins')).length, 0);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('Gemini CLI install/uninstall preserves settings, uses 5000ms AfterTool hook, and reports hooksConfig.enabled=false', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'skilltally-gem-inst-'));
+  const homeDir = join(tmp, 'home');
+  const dataHome = join(tmp, 'data');
+  try {
+    mkdirSync(join(homeDir, '.gemini'), { recursive: true });
+    const settingsPath = join(homeDir, '.gemini', 'settings.json');
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        theme: 'Default',
+        mcpServers: { myServer: { command: 'node' } },
+        hooksConfig: { enabled: false },
+        hooks: {
+          AfterTool: [{ matcher: 'write_file', hooks: [{ name: 'user-lint', type: 'command', command: 'echo lint' }] }],
+        },
+      })
+    );
+
+    const r1 = installGemini({ homeDir, dataHome, pkgRoot });
+    assert.equal(r1.status, 'installed');
+    assert.ok(r1.backup && existsSync(r1.backup));
+    assert.ok(r1.note && r1.note.includes('hooksConfig.enabled'));
+
+    const saved = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    assert.equal(saved.theme, 'Default');
+    assert.deepEqual(saved.mcpServers, { myServer: { command: 'node' } });
+    assert.equal(saved.hooks.AfterTool.length, 2);
+    const skilltallyGroup = saved.hooks.AfterTool.find((g) => g.matcher === 'activate_skill');
+    assert.equal(skilltallyGroup.hooks[0].timeout, 5000);
+    assert.equal(skilltallyGroup.hooks[0].name, 'skilltally');
+
+    // Idempotent 2nd run
+    const r2 = installGemini({ homeDir, dataHome, pkgRoot });
+    assert.equal(r2.status, 'unchanged');
+
+    // Doctor reports Gemini installed & hooksConfigDisabled=true
+    const doc = runDoctor({ homeDir, dataHome, pkgRoot });
+    assert.equal(doc.ok, true);
+    assert.equal(doc.hosts.gemini.detected, true);
+    assert.equal(doc.hosts.gemini.installed, true);
+    assert.equal(doc.hosts.gemini.hookPathValid, true);
+    assert.equal(doc.hosts.gemini.hooksConfigDisabled, true);
+
+    // Uninstall removes only skilltally AfterTool hook
+    const u1 = uninstallGemini({ homeDir, dataHome });
+    assert.equal(u1.status, 'uninstalled');
+    assert.equal(u1.removedCount, 1);
+    const after = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    assert.equal(after.hooks.AfterTool.length, 1);
+    assert.equal(after.hooks.AfterTool[0].matcher, 'write_file');
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

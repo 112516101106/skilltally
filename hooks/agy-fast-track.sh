@@ -5,7 +5,7 @@
 in=$(cat)
 
 run_node=0
-if [ "${SKILLTALLY_DEBUG:-0}" = "1" ]; then
+if [ "${SKILLTALLY_DEBUG:-0}" = "1" ] || [ -f "${SKILLTALLY_HOME:-$HOME/.skilltally}/.debug" ]; then
   run_node=1
 else
   case "$in" in

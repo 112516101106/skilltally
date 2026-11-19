@@ -5,6 +5,7 @@ import { writeBackfillEvents } from '../core/store.mjs';
 import { backfillAntigravity } from './antigravity.mjs';
 import { backfillClaude } from './claude.mjs';
 import { backfillCodex } from './codex.mjs';
+import { backfillGemini } from './gemini.mjs';
 
 export function runBackfill({
   homeDir = homedir(),
@@ -19,6 +20,7 @@ export function runBackfill({
   const wantAgy = host === 'all' || String(host).startsWith('antigravity');
   const wantCodex = host === 'all' || host === 'codex';
   const wantClaude = host === 'all' || host === 'claude';
+  const wantGemini = host === 'all' || host === 'gemini';
 
   if (wantAgy) {
     const res = backfillAntigravity({ homeDir, since });
@@ -49,6 +51,16 @@ export function runBackfill({
     const res = backfillClaude({ homeDir, since });
     collected.push(...res.events);
     hostsSummary.claude = {
+      files: res.files,
+      events: res.events.length,
+      uniqueSkills: new Set(res.events.map((e) => e.skill)).size,
+    };
+  }
+
+  if (wantGemini) {
+    const res = backfillGemini({ homeDir, since });
+    collected.push(...res.events);
+    hostsSummary.gemini = {
       files: res.files,
       events: res.events.length,
       uniqueSkills: new Set(res.events.map((e) => e.skill)).size,

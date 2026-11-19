@@ -94,27 +94,20 @@ function handlersEqual(a, b) {
     a?.command === b?.command &&
     Boolean(a?.async) === Boolean(b?.async) &&
     a?.timeout === b?.timeout &&
-    a?.statusMessage === b?.statusMessage
+    a?.statusMessage === b?.statusMessage &&
+    a?.name === b?.name &&
+    a?.description === b?.description
   );
 }
 
-export function mergePostToolUseHook(
-  doc,
-  { matcher, command, async = true, timeout = 5, statusMessage = 'skilltally' }
-) {
+export function mergeEventHook(doc, eventName, { matcher, handler }) {
   const nextDoc = structuredClone(doc && typeof doc === 'object' ? doc : {});
-  const desired = {
-    type: 'command',
-    command,
-    ...(async ? { async: true } : {}),
-    timeout,
-    statusMessage,
-  };
+  const desired = { ...handler };
 
   if (!nextDoc.hooks || typeof nextDoc.hooks !== 'object' || Array.isArray(nextDoc.hooks)) {
     nextDoc.hooks = {};
   }
-  const list = Array.isArray(nextDoc.hooks.PostToolUse) ? nextDoc.hooks.PostToolUse : [];
+  const list = Array.isArray(nextDoc.hooks[eventName]) ? nextDoc.hooks[eventName] : [];
 
   let existingCount = 0;
   let exactMatch = false;
@@ -147,7 +140,7 @@ export function mergePostToolUseHook(
     matcher,
     hooks: [desired],
   });
-  nextDoc.hooks.PostToolUse = cleaned;
+  nextDoc.hooks[eventName] = cleaned;
 
   return {
     nextDoc,
@@ -156,9 +149,25 @@ export function mergePostToolUseHook(
   };
 }
 
-export function removeSkilltallyHooks(doc) {
+export function mergePostToolUseHook(
+  doc,
+  { matcher, command, async = true, timeout = 5, statusMessage = 'skilltally' }
+) {
+  return mergeEventHook(doc, 'PostToolUse', {
+    matcher,
+    handler: {
+      type: 'command',
+      command,
+      ...(async ? { async: true } : {}),
+      timeout,
+      statusMessage,
+    },
+  });
+}
+
+export function removeSkilltallyHooksForEvent(doc, eventName) {
   const nextDoc = structuredClone(doc && typeof doc === 'object' ? doc : {});
-  const list = nextDoc?.hooks?.PostToolUse;
+  const list = nextDoc?.hooks?.[eventName];
   if (!Array.isArray(list)) {
     return { nextDoc, changed: false, removedCount: 0 };
   }
@@ -185,13 +194,17 @@ export function removeSkilltallyHooks(doc) {
   }
 
   if (cleaned.length > 0) {
-    nextDoc.hooks.PostToolUse = cleaned;
+    nextDoc.hooks[eventName] = cleaned;
   } else {
-    delete nextDoc.hooks.PostToolUse;
+    delete nextDoc.hooks[eventName];
     if (Object.keys(nextDoc.hooks).length === 0) {
       delete nextDoc.hooks;
     }
   }
 
   return { nextDoc, changed: true, removedCount };
+}
+
+export function removeSkilltallyHooks(doc) {
+  return removeSkilltallyHooksForEvent(doc, 'PostToolUse');
 }

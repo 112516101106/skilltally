@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 // skilltally standalone hook entry & shared detection primitives.
 // Contract when executed directly: NEVER throw, ALWAYS exit 0, ALWAYS print "{}".
-import { appendFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -237,12 +245,29 @@ function readStoreCwdFlag(home) {
   }
 }
 
+function maybeRotateEvents(home, eventsPath) {
+  const maxBytes = Number(process.env.SKILLTALLY_ROTATE_BYTES) || 20 * 1024 * 1024;
+  if (!existsSync(eventsPath)) return;
+  try {
+    if (statSync(eventsPath).size < maxBytes) return;
+    const month = new Date().toISOString().slice(0, 7);
+    let archivePath = join(home, `events-${month}.jsonl`);
+    let suffix = 1;
+    while (existsSync(archivePath)) {
+      archivePath = join(home, `events-${month}-${suffix}.jsonl`);
+      suffix += 1;
+    }
+    renameSync(eventsPath, archivePath);
+  } catch {}
+}
+
 export function main() {
   const hostFlag = argValue('--host') ?? 'auto';
   const raw = readFileSync(0, 'utf8');
   const home = process.env.SKILLTALLY_HOME || join(homedir(), '.skilltally');
+  const debugOn = process.env.SKILLTALLY_DEBUG === '1' || existsSync(join(home, '.debug'));
 
-  if (process.env.SKILLTALLY_DEBUG === '1') {
+  if (debugOn) {
     mkdirSync(home, { recursive: true, mode: 0o700 });
     appendFileSync(
       join(home, 'debug.jsonl'),
@@ -283,7 +308,9 @@ export function main() {
     })
   );
 
-  appendFileSync(join(home, 'events.jsonl'), lines.join('\n') + '\n', { mode: 0o600 });
+  const eventsPath = join(home, 'events.jsonl');
+  maybeRotateEvents(home, eventsPath);
+  appendFileSync(eventsPath, lines.join('\n') + '\n', { mode: 0o600 });
 }
 
 let isMain = false;

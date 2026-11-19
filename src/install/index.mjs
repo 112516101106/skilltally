@@ -4,6 +4,7 @@ import { getHomeDir } from '../core/config.mjs';
 import { detectAntigravity, installAntigravity, uninstallAntigravity } from './antigravity.mjs';
 import { detectClaude, installClaude, uninstallClaude } from './claude.mjs';
 import { detectCodex, installCodex, uninstallCodex } from './codex.mjs';
+import { detectGemini, installGemini, uninstallGemini } from './gemini.mjs';
 import { getPackageRoot } from './runtime.mjs';
 
 const HOSTS = {
@@ -22,6 +23,11 @@ const HOSTS = {
     install: installCodex,
     uninstall: uninstallCodex,
   },
+  gemini: {
+    detect: detectGemini,
+    install: installGemini,
+    uninstall: uninstallGemini,
+  },
 };
 
 export function runInstall({
@@ -34,7 +40,7 @@ export function runInstall({
 } = {}) {
   const normalizedHost = String(host || 'all').toLowerCase();
   if (normalizedHost !== 'all' && !Object.prototype.hasOwnProperty.call(HOSTS, normalizedHost)) {
-    throw new Error(`Unsupported host "${host}" (expected: all, antigravity, claude, codex)`);
+    throw new Error(`Unsupported host "${host}" (expected: all, antigravity, claude, codex, gemini)`);
   }
 
   const targets = normalizedHost === 'all' ? Object.keys(HOSTS) : [normalizedHost];
@@ -76,7 +82,7 @@ export function runUninstall({
 } = {}) {
   const normalizedHost = String(host || 'all').toLowerCase();
   if (normalizedHost !== 'all' && !Object.prototype.hasOwnProperty.call(HOSTS, normalizedHost)) {
-    throw new Error(`Unsupported host "${host}" (expected: all, antigravity, claude, codex)`);
+    throw new Error(`Unsupported host "${host}" (expected: all, antigravity, claude, codex, gemini)`);
   }
 
   const targets = normalizedHost === 'all' ? Object.keys(HOSTS) : [normalizedHost];

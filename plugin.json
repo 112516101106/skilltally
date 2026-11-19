@@ -2,7 +2,7 @@
   "name": "skilltally",
   "displayName": "SkillTally",
   "description": "Real-time skill usage tracking via hooks for Antigravity, Claude Code, Codex & Gemini CLI. See which skills you actually use and which eat context.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "112516101106",
     "url": "https://github.com/112516101106"

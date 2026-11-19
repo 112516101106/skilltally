@@ -1,24 +1,29 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { runBackfill } from '../src/backfill/index.mjs';
 import { getHomeDir, loadConfig } from '../src/core/config.mjs';
+import { getDebugStatus, setDebugMode } from '../src/core/debug.mjs';
 import { readAllEvents } from '../src/core/store.mjs';
 import { runDoctor } from '../src/install/doctor.mjs';
 import { runInstall, runUninstall } from '../src/install/index.mjs';
 import { scanInventory } from '../src/inventory/scan.mjs';
 import { aggregateStats, parseSince } from '../src/report/aggregate.mjs';
+import { exportEvents } from '../src/report/export.mjs';
 import {
   formatBackfill,
+  formatDebug,
   formatDoctor,
   formatInstall,
   formatInventory,
   formatStats,
+  formatTimeline,
   formatUninstall,
   formatUnused,
 } from '../src/report/format.mjs';
+import { buildTimeline } from '../src/report/timeline.mjs';
 import { main as runTrack } from './track.mjs';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -27,7 +32,7 @@ function getVersion() {
   try {
     return JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version;
   } catch {
-    return '0.2.0';
+    return '0.3.0';
   }
 }
 
@@ -35,14 +40,17 @@ function printHelp() {
   console.log(`skilltally v${getVersion()} — Local skill usage analytics across Antigravity, Claude Code, Codex & Gemini CLI
 
 Usage:
-  skilltally install   [--host all|antigravity|claude|codex] [--dry-run] [--force] [--json]
-  skilltally uninstall [--host all|antigravity|claude|codex] [--purge] [--dry-run] [--json]
+  skilltally install   [--host all|antigravity|claude|codex|gemini] [--dry-run] [--force] [--json]
+  skilltally uninstall [--host all|antigravity|claude|codex|gemini] [--purge] [--dry-run] [--json]
   skilltally doctor    [--json]
   skilltally stats     [--since 30d|all|YYYY-MM-DD] [--host <h>] [--project <p>] [--by-source] [--metric activations|reads] [--json]
   skilltally top       [-n 20] [--since 30d] [--host <h>] [--project <p>] [--by-source] [--metric activations|reads] [--json]
   skilltally unused    [--since 90d] [--host <h>] [--all] [--json]
-  skilltally backfill  [--host all|antigravity|codex|claude] [--since DATE] [--dry-run] [--json]
+  skilltally timeline  [--skill <name>] [--by day|week|month] [--since 30d|all] [--host <h>] [--project <p>] [--json]
+  skilltally export    [--format json|csv] [-o <file>] [--since all|30d] [--host <h>] [--project <p>] [--include-failed]
+  skilltally backfill  [--host all|antigravity|codex|claude|gemini] [--since DATE] [--dry-run] [--json]
   skilltally inventory [--no-project] [--json]
+  skilltally debug     [on|off|status] [--json]
   skilltally track     --host <antigravity|claude|codex|gemini|auto>
 
 Options:
@@ -61,6 +69,10 @@ function parseCliFlags(argv) {
       since: { type: 'string' },
       host: { type: 'string' },
       project: { type: 'string' },
+      skill: { type: 'string' },
+      by: { type: 'string' },
+      format: { type: 'string' },
+      output: { type: 'string', short: 'o' },
       metric: { type: 'string', default: 'activations' },
       limit: { type: 'string', short: 'n' },
       'by-source': { type: 'boolean', default: false },
@@ -68,6 +80,7 @@ function parseCliFlags(argv) {
       'dry-run': { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
       'no-project': { type: 'boolean', default: false },
+      'include-failed': { type: 'boolean', default: false },
       purge: { type: 'boolean', default: false },
       force: { type: 'boolean', default: false },
     },
@@ -86,7 +99,7 @@ function run() {
     process.exit(0);
   }
 
-  const { values } = parseCliFlags(sub ? argv.slice(1) : argv);
+  const { values, positionals } = parseCliFlags(sub ? argv.slice(1) : argv);
 
   if (values.version) {
     console.log(getVersion());
@@ -144,6 +157,26 @@ function run() {
     return;
   }
 
+  if (sub === 'debug') {
+    const action = (positionals[0] || 'status').toLowerCase();
+    let status;
+    if (action === 'on') {
+      status = setDebugMode(dataHome, true);
+    } else if (action === 'off') {
+      status = setDebugMode(dataHome, false);
+    } else if (action === 'status') {
+      status = getDebugStatus(dataHome);
+    } else {
+      throw new Error(`Invalid debug action "${action}" (expected: on, off, status)`);
+    }
+    if (values.json) {
+      console.log(JSON.stringify(status, null, 2));
+    } else {
+      console.log(formatDebug(status));
+    }
+    return;
+  }
+
   if (sub === 'backfill') {
     const sinceDate = values.since ? parseSince(values.since) : null;
     const summary = runBackfill({
@@ -166,6 +199,54 @@ function run() {
       console.log(JSON.stringify(inv.skills, null, 2));
     } else {
       console.log(formatInventory(inv));
+    }
+    return;
+  }
+
+  if (sub === 'timeline') {
+    const since = values.since ?? '30d';
+    const by = values.by ?? 'day';
+    const { events } = readAllEvents(dataHome);
+    const inventory = scanInventory({ includeProject: true });
+    const timeline = buildTimeline({
+      events,
+      inventory,
+      config,
+      skill: values.skill || null,
+      by,
+      since,
+      host: values.host || null,
+      project: values.project || null,
+    });
+    if (values.json) {
+      console.log(JSON.stringify(timeline, null, 2));
+    } else {
+      console.log(formatTimeline(timeline));
+    }
+    return;
+  }
+
+  if (sub === 'export') {
+    const since = values.since ?? 'all';
+    const format = values.format ?? 'json';
+    const { events } = readAllEvents(dataHome);
+    const inventory = scanInventory({ includeProject: true });
+    const out = exportEvents({
+      events,
+      inventory,
+      config,
+      format,
+      since,
+      host: values.host || null,
+      project: values.project || null,
+      includeFailed: Boolean(values['include-failed']),
+    });
+    if (values.output) {
+      mkdirSync(dirname(values.output), { recursive: true });
+      writeFileSync(values.output, out.content, 'utf8');
+      console.log(`Exported ${out.count} ${out.format.toUpperCase()} event(s) to ${values.output}`);
+    } else {
+      process.stdout.write(out.content);
     }
     return;
   }
