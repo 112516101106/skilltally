@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
+import { backfillClaude } from '../src/backfill/claude.mjs';
 import { runBackfill } from '../src/backfill/index.mjs';
 import { readAllEvents } from '../src/core/store.mjs';
 import { dedupeEvents } from '../src/core/normalize.mjs';
@@ -12,7 +13,7 @@ import { dedupeEvents } from '../src/core/normalize.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const fixturesDir = join(root, 'test', 'fixtures');
 
-test('backfills Antigravity (including truncated_fields and antigravity-ide) and Codex (.jsonl + .zst)', () => {
+test('backfills Antigravity (including truncated_fields and antigravity-ide), Codex (.jsonl + .zst), and Claude', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'skilltally-backfill-test-'));
   const homeDir = join(tmp, 'home');
   const dataHome = join(tmp, 'data');
@@ -79,6 +80,19 @@ test('backfills Antigravity (including truncated_fields and antigravity-ide) and
       expectedCodexEvents = 4;
     }
 
+    // Claude project transcript
+    const claudeProj = join(homeDir, '.claude', 'projects', '-Users-tester-projects-demo-app');
+    mkdirSync(claudeProj, { recursive: true });
+    copyFileSync(
+      join(fixturesDir, 'claude', 'session-sample.jsonl'),
+      join(claudeProj, '00000000-0000-4000-8000-000000000002.jsonl')
+    );
+
+    const claudeRaw = backfillClaude({ homeDir });
+    assert.equal(claudeRaw.files, 1);
+    assert.equal(claudeRaw.events.length, 5); // Skill + Read + Skill(pdf) + Bash(clean-code) + Read(missing), Edit ignored
+    assert.equal(claudeRaw.events.find((e) => e.skill === 'missing')?.ok, false);
+
     const summary = runBackfill({ homeDir, dataHome, host: 'all' });
     assert.equal(summary.hosts.antigravity.files, 2);
     // transcript-sample has 4 genuine reads (using-superpowers, requesting-code-review, clean-code, agy-customizations)
@@ -86,8 +100,17 @@ test('backfills Antigravity (including truncated_fields and antigravity-ide) and
     assert.equal(summary.hosts.antigravity.events, 5);
     assert.equal(summary.hosts.codex.events, expectedCodexEvents);
     assert.equal(summary.hosts.codex.skippedZst, 0);
+    assert.equal(summary.hosts.claude.files, 1);
+    assert.equal(summary.hosts.claude.events, 5);
 
     const { events } = readAllEvents(dataHome);
+    // Soft 5s dedupe collapses Claude Skill("superpowers:brainstorming") + Read 1s later into 1 event
+    const claudeEvents = events.filter((e) => e.host === 'claude');
+    assert.equal(claudeEvents.length, 4);
+    assert.deepEqual(
+      claudeEvents.map((e) => e.skill),
+      ['brainstorming', 'pdf', 'clean-code', 'missing']
+    );
     const agySkills = events.filter((e) => e.host.startsWith('antigravity')).map((e) => e.skill);
     assert.deepEqual(agySkills.sort(), [
       'agy-customizations',

@@ -34,16 +34,17 @@ Prefer the fastest available invocation:
    skilltally unused --since 90d
    ```
    Shows enabled installed skills with zero activations in the window, grouped by source with estimated `KB` and `~tokens/session` saved by disabling unused plugins.
-4. **Import history from local logs** (Antigravity + Codex):
+4. **Import history from local logs** (Antigravity, Codex, Claude Code):
    ```bash
    skilltally backfill
    ```
-5. **Inspect installed inventory**:
+5. **Inspect installed inventory & verify hooks**:
    ```bash
    skilltally inventory --json
+   skilltally doctor
    ```
 
-If `stats` shows zero events, run `skilltally backfill` first or tell the user no recorded skill calls were found yet.
+If `stats` shows zero events, run `skilltally doctor` to check hook installation, then suggest `skilltally install` and `skilltally backfill`.
 
 ## Rules
 

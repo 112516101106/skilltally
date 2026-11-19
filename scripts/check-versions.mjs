@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Ensures package.json and all present plugin/extension manifests stay on the same version.
+ * Ensures package.json and all present plugin/extension manifests stay on the same version,
+ * and ensures hooks/hooks.json is never created (avoids Claude Code / Gemini CLI collision).
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -12,6 +13,11 @@ const expected = pkg.version;
 
 if (!expected) {
   console.error('package.json missing version');
+  process.exit(1);
+}
+
+if (existsSync(join(root, 'hooks', 'hooks.json'))) {
+  console.error('Forbidden file hooks/hooks.json exists (collides between Claude Code and Gemini CLI)');
   process.exit(1);
 }
 
@@ -32,6 +38,19 @@ for (const rel of candidates) {
   checked.push(rel);
   if (data.version !== expected) {
     mismatches.push(`${rel}: found ${JSON.stringify(data.version)}, expected ${JSON.stringify(expected)}`);
+  }
+}
+
+const claudeMktPath = join(root, '.claude-plugin', 'marketplace.json');
+if (existsSync(claudeMktPath)) {
+  const mkt = JSON.parse(readFileSync(claudeMktPath, 'utf8'));
+  checked.push('.claude-plugin/marketplace.json');
+  for (const [idx, entry] of (mkt.plugins || []).entries()) {
+    if (entry.version !== expected) {
+      mismatches.push(
+        `.claude-plugin/marketplace.json plugins[${idx}]: found ${JSON.stringify(entry.version)}, expected ${JSON.stringify(expected)}`
+      );
+    }
   }
 }
 

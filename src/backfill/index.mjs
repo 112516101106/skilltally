@@ -3,6 +3,7 @@ import { getHomeDir } from '../core/config.mjs';
 import { dedupeEvents } from '../core/normalize.mjs';
 import { writeBackfillEvents } from '../core/store.mjs';
 import { backfillAntigravity } from './antigravity.mjs';
+import { backfillClaude } from './claude.mjs';
 import { backfillCodex } from './codex.mjs';
 
 export function runBackfill({
@@ -17,6 +18,7 @@ export function runBackfill({
 
   const wantAgy = host === 'all' || String(host).startsWith('antigravity');
   const wantCodex = host === 'all' || host === 'codex';
+  const wantClaude = host === 'all' || host === 'claude';
 
   if (wantAgy) {
     const res = backfillAntigravity({ homeDir, since });
@@ -40,6 +42,16 @@ export function runBackfill({
       events: res.events.length,
       uniqueSkills: new Set(res.events.map((e) => e.skill)).size,
       skippedZst: res.skippedZst,
+    };
+  }
+
+  if (wantClaude) {
+    const res = backfillClaude({ homeDir, since });
+    collected.push(...res.events);
+    hostsSummary.claude = {
+      files: res.files,
+      events: res.events.length,
+      uniqueSkills: new Set(res.events.map((e) => e.skill)).size,
     };
   }
 

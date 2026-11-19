@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "skilltally",
+  "description": "Real-time skill usage tracking via hooks for Claude Code, Codex, Antigravity & Gemini CLI.",
+  "owner": {
+    "name": "112516101106",
+    "url": "https://github.com/112516101106"
+  },
+  "plugins": [
+    {
+      "name": "skilltally",
+      "description": "Track skill activations and identify unused skills eating context.",
+      "version": "0.2.0",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

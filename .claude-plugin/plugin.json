@@ -1,0 +1,13 @@
+{
+  "name": "skilltally",
+  "version": "0.2.0",
+  "description": "Real-time skill usage tracking via hooks for Antigravity, Claude Code, Codex & Gemini CLI.",
+  "author": {
+    "name": "112516101106",
+    "url": "https://github.com/112516101106"
+  },
+  "homepage": "https://github.com/112516101106/skilltally",
+  "repository": "https://github.com/112516101106/skilltally",
+  "license": "MIT",
+  "hooks": "./hooks/claude-codex-hooks.json"
+}

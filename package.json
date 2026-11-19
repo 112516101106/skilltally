@@ -1,6 +1,6 @@
 {
   "name": "skilltally",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Real-time skill usage tracking via hooks for Antigravity, Claude Code, Codex & Gemini CLI.",
   "type": "module",
   "bin": {
@@ -16,6 +16,9 @@
     "hooks",
     "hooks.json",
     "plugin.json",
+    ".claude-plugin",
+    ".codex-plugin",
+    ".agents",
     "LICENSE",
     "README.md"
   ],

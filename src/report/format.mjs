@@ -147,3 +147,75 @@ export function formatBackfill(summary) {
   }
   return lines.join('\n');
 }
+
+export function formatInstall(res) {
+  const lines = [];
+  lines.push(`skilltally install${res.dryRun ? ' (dry-run)' : ''}`);
+  lines.push('');
+  for (const r of res.results) {
+    const detail = r.reason || r.target || '';
+    lines.push(`  ${padRight(r.host, 12)} ${padRight(r.status, 14)} ${detail}`.trimEnd());
+    if (r.backup) lines.push(`               backup: ${r.backup}`);
+    if (r.note) lines.push(`               note: ${r.note}`);
+  }
+  return lines.join('\n');
+}
+
+export function formatUninstall(res) {
+  const lines = [];
+  lines.push(`skilltally uninstall${res.dryRun ? ' (dry-run)' : ''}`);
+  lines.push('');
+  for (const r of res.results) {
+    const detail = r.target || '';
+    lines.push(`  ${padRight(r.host, 12)} ${padRight(r.status, 14)} ${detail}`.trimEnd());
+    if (r.backup) lines.push(`               backup: ${r.backup}`);
+  }
+  if (res.purgeRequested) {
+    lines.push(
+      res.purged
+        ? `  data         ${res.dryRun ? 'would_remove' : 'purged'}         ${res.dataHome}`
+        : `  data         not_found      ${res.dataHome}`
+    );
+  }
+  return lines.join('\n');
+}
+
+export function formatDoctor(report) {
+  const lines = [];
+  lines.push(`skilltally doctor — ${report.ok ? 'OK' : 'ISSUES FOUND'}`);
+  lines.push('');
+  lines.push(
+    `  node         ${report.node.ok ? 'ok' : 'fail'}  v${report.node.version} (zstd native: ${report.node.zstdNative ? 'yes' : 'no'})`
+  );
+  lines.push(
+    `  self-test    ${report.selfTest.ok ? 'ok' : 'fail'}${report.selfTest.error ? `  ${report.selfTest.error}` : ''}`
+  );
+  lines.push(
+    `  events       ${report.events.total} total (${report.events.hook} hook, ${report.events.backfill} backfill, ${report.events.corruptLines} corrupt)${report.events.latestTs ? ` · latest ${formatDateCompact(report.events.latestTs)}` : ''}`
+  );
+  lines.push('');
+  lines.push('Hosts:');
+  for (const [name, h] of Object.entries(report.hosts)) {
+    const status = !h.detected
+      ? 'not_detected'
+      : h.hookPathValid === false
+        ? 'broken_path'
+        : h.installed
+          ? h.disabled
+            ? 'disabled'
+            : 'active'
+          : 'not_installed';
+    const extras = [];
+    if (h.mode && h.mode !== 'none') extras.push(`mode=${h.mode}`);
+    if (h.pluginInstalled) extras.push('plugin=yes');
+    if (h.settingsInstalled) extras.push('settings=yes');
+    if (h.hooksJsonInstalled) extras.push('hooks.json=yes');
+    if (h.trustStatus && h.trustStatus !== 'unknown') extras.push(`trust=${h.trustStatus}`);
+    if (h.duplicateHook) extras.push('WARNING: duplicate hook');
+    if (h.hookPathValid === false) extras.push('ERROR: hook target missing on disk');
+    lines.push(
+      `  ${padRight(name, 12)} ${padRight(status, 14)} ${extras.join(' · ')}`.trimEnd()
+    );
+  }
+  return lines.join('\n');
+}

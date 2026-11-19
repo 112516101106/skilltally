@@ -1,0 +1,39 @@
+{
+  "name": "skilltally",
+  "version": "0.2.0",
+  "description": "Real-time skill usage tracking via hooks for Antigravity, Claude Code, Codex & Gemini CLI.",
+  "author": {
+    "name": "112516101106",
+    "url": "https://github.com/112516101106"
+  },
+  "homepage": "https://github.com/112516101106/skilltally",
+  "repository": "https://github.com/112516101106/skilltally",
+  "license": "MIT",
+  "keywords": [
+    "skills",
+    "analytics",
+    "usage",
+    "hooks",
+    "productivity"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/claude-codex-hooks.json",
+  "interface": {
+    "displayName": "SkillTally",
+    "shortDescription": "Real-time skill usage analytics & Context Tax reporter",
+    "longDescription": "Track which agent skills are actually invoked via lightweight PostToolUse hooks and historical log backfill, and find unused skills costing session context tokens.",
+    "developerName": "112516101106",
+    "category": "Productivity",
+    "capabilities": [
+      "Lifecycle hooks",
+      "Read"
+    ],
+    "websiteURL": "https://github.com/112516101106/skilltally",
+    "defaultPrompt": [
+      "Which agent skills do I use the most in the last 30 days?",
+      "Show unused skills and how many context tokens disabling them would save",
+      "Backfill skill usage history from local agent logs"
+    ],
+    "brandColor": "#0F766E"
+  }
+}

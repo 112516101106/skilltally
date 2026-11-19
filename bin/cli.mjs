@@ -6,9 +6,19 @@ import { parseArgs } from 'node:util';
 import { runBackfill } from '../src/backfill/index.mjs';
 import { getHomeDir, loadConfig } from '../src/core/config.mjs';
 import { readAllEvents } from '../src/core/store.mjs';
+import { runDoctor } from '../src/install/doctor.mjs';
+import { runInstall, runUninstall } from '../src/install/index.mjs';
 import { scanInventory } from '../src/inventory/scan.mjs';
 import { aggregateStats, parseSince } from '../src/report/aggregate.mjs';
-import { formatBackfill, formatInventory, formatStats, formatUnused } from '../src/report/format.mjs';
+import {
+  formatBackfill,
+  formatDoctor,
+  formatInstall,
+  formatInventory,
+  formatStats,
+  formatUninstall,
+  formatUnused,
+} from '../src/report/format.mjs';
 import { main as runTrack } from './track.mjs';
 
 const pkgDir = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -17,7 +27,7 @@ function getVersion() {
   try {
     return JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8')).version;
   } catch {
-    return '0.1.0';
+    return '0.2.0';
   }
 }
 
@@ -25,10 +35,13 @@ function printHelp() {
   console.log(`skilltally v${getVersion()} — Local skill usage analytics across Antigravity, Claude Code, Codex & Gemini CLI
 
 Usage:
+  skilltally install   [--host all|antigravity|claude|codex] [--dry-run] [--force] [--json]
+  skilltally uninstall [--host all|antigravity|claude|codex] [--purge] [--dry-run] [--json]
+  skilltally doctor    [--json]
   skilltally stats     [--since 30d|all|YYYY-MM-DD] [--host <h>] [--project <p>] [--by-source] [--metric activations|reads] [--json]
   skilltally top       [-n 20] [--since 30d] [--host <h>] [--project <p>] [--by-source] [--metric activations|reads] [--json]
   skilltally unused    [--since 90d] [--host <h>] [--all] [--json]
-  skilltally backfill  [--host all|antigravity|codex] [--since DATE] [--dry-run] [--json]
+  skilltally backfill  [--host all|antigravity|codex|claude] [--since DATE] [--dry-run] [--json]
   skilltally inventory [--no-project] [--json]
   skilltally track     --host <antigravity|claude|codex|gemini|auto>
 
@@ -55,6 +68,8 @@ function parseCliFlags(argv) {
       'dry-run': { type: 'boolean', default: false },
       all: { type: 'boolean', default: false },
       'no-project': { type: 'boolean', default: false },
+      purge: { type: 'boolean', default: false },
+      force: { type: 'boolean', default: false },
     },
   });
 }
@@ -80,12 +95,54 @@ function run() {
 
   if (values.help || !sub) {
     printHelp();
-    if (!sub && !values.help) process.exitCode = 0;
     return;
   }
 
   const dataHome = getHomeDir();
   const config = loadConfig(dataHome);
+
+  if (sub === 'install') {
+    const res = runInstall({
+      dataHome,
+      pkgRoot: pkgDir,
+      host: values.host || 'all',
+      dryRun: Boolean(values['dry-run']),
+      force: Boolean(values.force),
+    });
+    if (values.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(formatInstall(res));
+    }
+    if (res.exitCode) process.exitCode = res.exitCode;
+    return;
+  }
+
+  if (sub === 'uninstall') {
+    const res = runUninstall({
+      dataHome,
+      host: values.host || 'all',
+      purge: Boolean(values.purge),
+      dryRun: Boolean(values['dry-run']),
+    });
+    if (values.json) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(formatUninstall(res));
+    }
+    return;
+  }
+
+  if (sub === 'doctor') {
+    const report = runDoctor({ dataHome, pkgRoot: pkgDir });
+    if (values.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(formatDoctor(report));
+    }
+    if (!report.ok) process.exitCode = 1;
+    return;
+  }
 
   if (sub === 'backfill') {
     const sinceDate = values.since ? parseSince(values.since) : null;
@@ -114,8 +171,7 @@ function run() {
   }
 
   if (sub === 'stats' || sub === 'top') {
-    const defaultSince = sub === 'top' ? '30d' : '30d';
-    const since = values.since ?? defaultSince;
+    const since = values.since ?? '30d';
     const limit = values.limit !== undefined ? Number(values.limit) : sub === 'top' ? 20 : null;
     if (limit !== null && (!Number.isFinite(limit) || limit < 1)) {
       throw new Error(`Invalid -n/--limit value: "${values.limit}"`);
@@ -162,7 +218,9 @@ function run() {
       host: values.host || null,
     });
     if (values.json) {
-      console.log(JSON.stringify({ window: report.window, inventory: report.inventory, unused: report.unused }, null, 2));
+      console.log(
+        JSON.stringify({ window: report.window, inventory: report.inventory, unused: report.unused }, null, 2)
+      );
     } else {
       console.log(formatUnused(report, { showAll: Boolean(values.all) }));
     }

@@ -1,0 +1,21 @@
+{
+  "name": "skilltally",
+  "interface": {
+    "displayName": "SkillTally"
+  },
+  "plugins": [
+    {
+      "name": "skilltally",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/112516101106/skilltally.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
