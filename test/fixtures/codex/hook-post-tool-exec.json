@@ -1,0 +1,13 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "cwd": "/Users/tester/projects/demo-app",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "exec",
+  "tool_use_id": "call_codex_001",
+  "tool_input": {
+    "input": "const r = await tools.exec_command({cmd:\"cat /Users/tester/.agents/skills/agent-browser/SKILL.md\",max_output_tokens:12000});\ntext(r.output);\n"
+  },
+  "tool_response": {
+    "exit_code": 0
+  }
+}

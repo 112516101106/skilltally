@@ -1,0 +1,14 @@
+{
+  "toolCall": {
+    "id": "toolu_01agy_miss",
+    "name": "read_file",
+    "args": {
+      "Path": "\"/Users/tester/projects/demo-app/src/index.js\""
+    }
+  },
+  "stepIdx": 6,
+  "conversationId": "conv-agy-001",
+  "transcriptPath": "/Users/tester/.gemini/antigravity/brain/conv-agy-001/.system_generated/logs/transcript.jsonl",
+  "hookEventName": "PostToolUse",
+  "cwd": "/Users/tester/projects/demo-app"
+}

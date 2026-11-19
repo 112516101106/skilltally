@@ -1,0 +1,18 @@
+{
+  "toolCall": {
+    "id": "toolu_01agy_hit",
+    "name": "view_file",
+    "args": {
+      "AbsolutePath": "\"/Users/tester/.gemini/config/plugins/superpowers/skills/requesting-code-review/SKILL.md\""
+    }
+  },
+  "stepIdx": 5,
+  "conversationId": "conv-agy-001",
+  "workspacePaths": ["/Users/tester/projects/demo-app"],
+  "transcriptPath": "/Users/tester/.gemini/antigravity/brain/conv-agy-001/.system_generated/logs/transcript.jsonl",
+  "artifactDirectoryPath": "/Users/tester/.gemini/antigravity/brain/conv-agy-001",
+  "modelName": "gemini-3-pro",
+  "lastUserInput": "Review my changes",
+  "hookEventName": "PostToolUse",
+  "cwd": "/Users/tester/projects/demo-app"
+}

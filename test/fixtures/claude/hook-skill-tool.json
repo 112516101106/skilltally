@@ -1,0 +1,11 @@
+{
+  "session_id": "sess-claude-001",
+  "transcript_path": "/Users/tester/.claude/projects/demo-app/sess-claude-001.jsonl",
+  "cwd": "/Users/tester/projects/demo-app",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Skill",
+  "tool_use_id": "toolu_cc_01",
+  "tool_input": {
+    "skill": "superpowers:brainstorming"
+  }
+}

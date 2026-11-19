@@ -1,0 +1,9 @@
+{
+  "session_id": "sess-gemini-001",
+  "cwd": "/Users/tester/projects/demo-app",
+  "hook_event_name": "AfterTool",
+  "tool_name": "activate_skill",
+  "tool_input": {
+    "name": "pdf"
+  }
+}
