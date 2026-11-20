@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
 import { getHomeDir, loadConfig } from '../core/config.mjs';
-import { dedupeEvents } from '../core/normalize.mjs';
+import { canonicalizeEvent, dedupeEvents } from '../core/normalize.mjs';
 import { writeBackfillEvents } from '../core/store.mjs';
+import { scanInventory } from '../inventory/scan.mjs';
 import { backfillAntigravity } from './antigravity.mjs';
 import { backfillClaude } from './claude.mjs';
 import { backfillCodex } from './codex.mjs';
@@ -18,6 +19,10 @@ export function runBackfill({
   const collected = [];
   const config = loadConfig(dataHome);
   const storePrompts = Boolean(config.store_prompts);
+  const aliases = config.aliases || {};
+  const inv = scanInventory({ homeDir, includeProject: false });
+
+  const canonicalizeList = (list) => list.map((e) => canonicalizeEvent(e, inv.index, aliases));
 
   const wantAgy = host === 'all' || String(host).startsWith('antigravity');
   const wantCodex = host === 'all' || host === 'codex';
@@ -26,10 +31,11 @@ export function runBackfill({
 
   if (wantAgy) {
     const res = backfillAntigravity({ homeDir, since, storePrompts });
-    const filtered =
+    const filtered = canonicalizeList(
       host === 'all' || host === 'antigravity'
         ? res.events
-        : res.events.filter((e) => e.host === host);
+        : res.events.filter((e) => e.host === host)
+    );
     collected.push(...filtered);
     hostsSummary.antigravity = {
       files: res.files,
@@ -40,32 +46,35 @@ export function runBackfill({
 
   if (wantCodex) {
     const res = backfillCodex({ homeDir, since, storePrompts });
-    collected.push(...res.events);
+    const canon = canonicalizeList(res.events);
+    collected.push(...canon);
     hostsSummary.codex = {
       files: res.files,
-      events: res.events.length,
-      uniqueSkills: new Set(res.events.map((e) => e.skill)).size,
+      events: canon.length,
+      uniqueSkills: new Set(canon.map((e) => e.skill)).size,
       skippedZst: res.skippedZst,
     };
   }
 
   if (wantClaude) {
     const res = backfillClaude({ homeDir, since, storePrompts });
-    collected.push(...res.events);
+    const canon = canonicalizeList(res.events);
+    collected.push(...canon);
     hostsSummary.claude = {
       files: res.files,
-      events: res.events.length,
-      uniqueSkills: new Set(res.events.map((e) => e.skill)).size,
+      events: canon.length,
+      uniqueSkills: new Set(canon.map((e) => e.skill)).size,
     };
   }
 
   if (wantGemini) {
     const res = backfillGemini({ homeDir, since, storePrompts });
-    collected.push(...res.events);
+    const canon = canonicalizeList(res.events);
+    collected.push(...canon);
     hostsSummary.gemini = {
       files: res.files,
-      events: res.events.length,
-      uniqueSkills: new Set(res.events.map((e) => e.skill)).size,
+      events: canon.length,
+      uniqueSkills: new Set(canon.map((e) => e.skill)).size,
     };
   }
 

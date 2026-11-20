@@ -46,6 +46,10 @@ test('Antigravity install/uninstall preserves dev symlinks, skips config.json, a
     const upd = installAntigravity({ homeDir, pkgRoot, dryRun: false });
     assert.equal(upd.status, 'updated');
 
+    // Invoking install from inside the installed non-symlink target directory itself must not throw
+    const selfUpd = installAntigravity({ homeDir, pkgRoot: inst.target, dryRun: false });
+    assert.equal(selfUpd.status, 'updated');
+
     const uninst = uninstallAntigravity({ homeDir });
     assert.equal(uninst.status, 'uninstalled');
     assert.equal(existsSync(inst.target), false);

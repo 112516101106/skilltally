@@ -1,4 +1,5 @@
 import { realpathSync } from 'node:fs';
+import { resolveSource } from './detect.mjs';
 
 function normalizePathKey(p) {
   if (!p) return '';
@@ -9,9 +10,26 @@ function normalizePathKey(p) {
   return resolved.replace(/\\/g, '/');
 }
 
+function isMalformedPluginVersionSource(src) {
+  return typeof src === 'string' && /^plugin:(?:v?\d+\.\d+(?:\.\d+)?(?:-[A-Za-z0-9._-]+)?|latest)$/i.test(src);
+}
+
 export function canonicalizeEvent(ev, inventoryIndex = null, aliases = {}) {
   let skill = String(ev.skill || '');
   let source = ev.source || 'unknown';
+
+  const nsMatch = skill.match(/^([A-Za-z0-9._-]+):+([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/);
+  if (nsMatch) {
+    skill = nsMatch[2];
+    if (!source || source === 'unknown') {
+      source = `plugin:${nsMatch[1]}`;
+    }
+  }
+
+  if (ev.skill_path && (!source || source === 'unknown' || isMalformedPluginVersionSource(source))) {
+    const fixedSrc = resolveSource(ev.skill_path);
+    if (fixedSrc !== 'unknown') source = fixedSrc;
+  }
 
   if (inventoryIndex) {
     let entry = null;
@@ -22,11 +40,18 @@ export function canonicalizeEvent(ev, inventoryIndex = null, aliases = {}) {
       }
     }
     if (!entry && skill) {
-      entry = inventoryIndex.byDirName?.get(skill) ?? inventoryIndex.byName?.get(skill) ?? null;
+      if (source && source !== 'unknown') {
+        entry = inventoryIndex.bySkillAndSource?.get(`${skill}\0${source}`) ?? null;
+      }
+      if (!entry) {
+        entry = inventoryIndex.byDirName?.get(skill) ?? inventoryIndex.byName?.get(skill) ?? null;
+      }
     }
     if (entry) {
       if (entry.name) skill = entry.name;
-      if ((!source || source === 'unknown') && entry.source) source = entry.source;
+      if ((!source || source === 'unknown' || isMalformedPluginVersionSource(source)) && entry.source) {
+        source = entry.source;
+      }
     }
   }
 
@@ -39,6 +64,14 @@ export function canonicalizeEvent(ev, inventoryIndex = null, aliases = {}) {
     skill,
     source,
   };
+}
+
+function isManualTriggerVia(via) {
+  return via === 'slash_command' || via === 'mention';
+}
+
+function isAutoTriggerVia(via) {
+  return via === 'read' || via === 'shell_read';
 }
 
 export function dedupeEvents(events, windowMs = 30_000) {
@@ -63,11 +96,18 @@ export function dedupeEvents(events, windowMs = 30_000) {
       if (Number.isFinite(tsMs)) {
         const key = `${ev.host || 'unknown'}\0${ev.session_id}\0${ev.skill}`;
         const prev = seenWindows.get(key);
-        if (prev && prev.some((p) => Math.abs(p - tsMs) <= windowMs)) {
+        const dupMatch = prev?.find((p) => Math.abs(p.tsMs - tsMs) <= windowMs);
+        if (dupMatch) {
+          if (isManualTriggerVia(ev.via) && isAutoTriggerVia(dupMatch.ev.via)) {
+            dupMatch.ev.via = ev.via;
+          }
           continue;
         }
-        if (prev) prev.push(tsMs);
-        else seenWindows.set(key, [tsMs]);
+        const cloned = { ...ev };
+        if (prev) prev.push({ tsMs, ev: cloned });
+        else seenWindows.set(key, [{ tsMs, ev: cloned }]);
+        out.push(cloned);
+        continue;
       }
     }
 

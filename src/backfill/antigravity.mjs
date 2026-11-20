@@ -77,7 +77,13 @@ export function backfillAntigravity({ homeDir = homedir(), since = null, storePr
     } catch {
       continue;
     }
-    if (!raw || (!raw.includes('SKILL.md') && !raw.includes('truncated_fields') && !raw.includes('<SKILL>'))) {
+    if (
+      !raw ||
+      (!raw.includes('SKILL.md') &&
+        !raw.includes('truncated_fields') &&
+        !raw.includes('<SKILL>') &&
+        !raw.includes('/skills/'))
+    ) {
       continue;
     }
 
@@ -156,7 +162,9 @@ export function backfillAntigravity({ homeDir = homedir(), since = null, storePr
       const stepUsage = extractUsageMetrics(obj.usageMetadata ?? obj.usage);
       if (stepUsage) turnUsageMap.set(turnId, stepUsage);
 
-      if (!line.includes('SKILL.md') && !line.includes('truncated_fields')) continue;
+      if (!line.includes('SKILL.md') && !line.includes('truncated_fields') && !line.includes('/skills/')) {
+        continue;
+      }
 
       if (Array.isArray(obj.truncated_fields) && obj.truncated_fields.includes('tool_calls')) {
         const fullObj = loadFullRecord(fullCache, item.fullPath, lineIdx, obj.step_index);
@@ -208,9 +216,20 @@ export function backfillAntigravity({ homeDir = homedir(), since = null, storePr
       }
     }
 
-    const readSkillSet = new Set(convEvents.map((e) => e.skill));
+    const normSkillKey = (s) => String(s || '').replace(/^.*:/, '').replace(/_/g, '-').toLowerCase();
+    const normPathKey = (p) => String(p || '').replace(/\\/g, '/');
     for (const uEv of pendingUserSkills) {
-      if (!readSkillSet.has(uEv.skill)) {
+      const matchingReads = convEvents.filter(
+        (e) =>
+          e._turnId === uEv._turnId &&
+          (normSkillKey(e.skill) === normSkillKey(uEv.skill) ||
+            (e.skill_path && uEv.skill_path && normPathKey(e.skill_path) === normPathKey(uEv.skill_path)))
+      );
+      if (matchingReads.length > 0) {
+        for (const rEv of matchingReads) {
+          rEv.via = 'slash_command';
+        }
+      } else {
         convEvents.push(uEv);
       }
     }

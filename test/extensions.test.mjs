@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -599,9 +599,106 @@ test('sanitizePromptPreview, extractUsageMetrics, backfillClaude, aggregateStats
     assert.match(html, /Longest task/);
     assert.match(html, /Longest streak/);
     assert.match(html, /Current streak/);
+    assert.match(html, /Total skill reads/);
+    assert.doesNotMatch(html, /Total skills used/);
     const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
     assert.ok(scriptMatch);
     assert.doesNotThrow(() => new vm.Script(scriptMatch[1]));
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('scanInventory handles .system, semver sort, duplicate marketplaces, and aggregateStats fixes token/cache/duration/used inflation', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'skilltally-audit-agg-'));
+  const homeDir = join(tmp, 'home');
+  try {
+    // Nested .system skill + multi-version Codex cache + orphan plugin-install + duplicate marketplace
+    const sysSkill = join(homeDir, '.codex', 'skills', '.system', 'review-agent');
+    mkdirSync(sysSkill, { recursive: true });
+    writeFileSync(join(sysSkill, 'SKILL.md'), '---\nname: review-agent\ndescription: System reviewer.\n---\n');
+
+    const v09 = join(homeDir, '.codex', 'plugins', 'cache', 'openai-curated-remote', 'my-plugin', '0.1.9', 'skills', 's-ver');
+    const v11 = join(homeDir, '.codex', 'plugins', 'cache', 'openai-curated-remote', 'my-plugin', '0.1.11', 'skills', 's-ver');
+    mkdirSync(v09, { recursive: true });
+    mkdirSync(v11, { recursive: true });
+    writeFileSync(join(v09, 'SKILL.md'), '---\nname: s-ver\ndescription: Old version description.\n---\n');
+    writeFileSync(join(v11, 'SKILL.md'), '---\nname: s-ver\ndescription: ' + 'n'.repeat(400) + '\n---\n');
+
+    // Explicitly disabled in @plugins-cli, stale copy in @google-labs-code-stitch-skills, plus orphan staging dir
+    const cliStitch = join(homeDir, '.codex', 'plugins', 'cache', 'plugins-cli', 'stitch-build', '1.0.0', 'skills', 'stitch-build');
+    const dupStitch = join(homeDir, '.codex', 'plugins', 'cache', 'google-labs-code-stitch-skills', 'stitch-build', 'abc', 'skills', 'stitch-build');
+    const orphanTmp = join(homeDir, '.codex', 'plugins', 'cache', 'openai-curated', 'plugin-install-5UJ2x0', 'web', 'skills', 'ghost');
+    mkdirSync(cliStitch, { recursive: true });
+    mkdirSync(dupStitch, { recursive: true });
+    mkdirSync(orphanTmp, { recursive: true });
+    writeFileSync(join(cliStitch, 'SKILL.md'), '---\nname: stitch-build\ndescription: Stitch.\n---\n');
+    writeFileSync(join(dupStitch, 'SKILL.md'), '---\nname: stitch-build\ndescription: Stitch dup.\n---\n');
+    writeFileSync(join(orphanTmp, 'SKILL.md'), '---\nname: ghost\ndescription: Orphan.\n---\n');
+
+    // Same skill installed both as personal and in plugin -> usedInstalledCount should not double-count
+    const persReview = join(homeDir, '.agents', 'skills', 'review-agent');
+    mkdirSync(persReview, { recursive: true });
+    writeFileSync(join(persReview, 'SKILL.md'), '---\nname: review-agent\ndescription: Duplicate personal copy.\n---\n');
+
+    writeFileSync(
+      join(homeDir, '.codex', 'config.toml'),
+      '[plugins."stitch-build@plugins-cli"]\nenabled = false\n'
+    );
+
+    const inv = scanInventory({ homeDir, includeProject: false });
+    const enabledNames = inv.skills.filter((s) => s.enabled).map((s) => s.name);
+    assert.equal(inv.skills.find((s) => s.name === 's-ver').est_tokens, 100); // picked 0.1.11 over 0.1.9
+    assert.equal(enabledNames.includes('ghost'), false);
+    assert.equal(inv.skills.filter((s) => s.dir_name === 'stitch-build').length, 1);
+    assert.equal(inv.skills.find((s) => s.dir_name === 'stitch-build').enabled, false);
+    assert.ok(inv.index.byPath.has(realpathSync(join(dupStitch, 'SKILL.md')).replace(/\\/g, '/')));
+    assert.ok(inv.index.bySkillAndSource.has('review-agent\0personal'));
+
+    // Events: 2 skills read in the exact same Codex turn sharing identical token snapshot & overlapping duration
+    const events = [
+      {
+        v: 1,
+        id: 'cx:s1:c1#0',
+        ts: '2026-11-18T10:00:00Z',
+        host: 'codex',
+        skill: 's-ver',
+        source: 'plugin:my-plugin',
+        session_id: 's1',
+        duration_seconds: 60,
+        input_tokens: 10000,
+        cache_read_tokens: 9600,
+        output_tokens: 200,
+        total_tokens: 10200,
+        origin: 'backfill',
+        ok: true,
+      },
+      {
+        v: 1,
+        id: 'cx:s1:c2#0',
+        ts: '2026-11-18T10:00:10Z',
+        host: 'codex',
+        skill: 'review-agent',
+        skill_path: join(sysSkill, 'SKILL.md'),
+        source: 'personal',
+        session_id: 's1',
+        duration_seconds: 50,
+        input_tokens: 10000,
+        cache_read_tokens: 9600,
+        output_tokens: 200,
+        total_tokens: 10200,
+        origin: 'backfill',
+        ok: true,
+      },
+    ];
+
+    const now = new Date('2026-11-20T12:00:00.000Z');
+    const report = aggregateStats({ events, inventory: inv, since: '30d', now });
+    assert.equal(report.totals.tokens.total, 10200); // deduped across same turn, NOT 20400
+    assert.equal(report.totals.tokens.cacheHitRate, 0.96); // 9600 / 10000, NOT 0.49
+    assert.equal(report.totals.duration.totalSeconds, 60); // merged [0..60s] and [10..60s], NOT 110s
+    assert.equal(report.totals.duration.longestTaskSeconds, 60);
+    assert.ok(report.inventory.used <= report.totals.uniqueSkills); // does not double-count both review-agent paths
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

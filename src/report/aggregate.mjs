@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { canonicalizeEvent, dedupeEvents } from '../core/normalize.mjs';
 
 export function parseSince(sinceStr, now = new Date()) {
@@ -129,13 +130,49 @@ export function prepareFilteredEvents({
 
 function findInventoryEntry(inventory, skill, source, bySource) {
   if (!inventory) return null;
-  if (bySource && Array.isArray(inventory.skills)) {
-    const exact = inventory.skills.find(
-      (s) => (s.name === skill || s.dir_name === skill) && s.source === source
-    );
-    if (exact) return exact;
+  if (source && source !== 'unknown') {
+    const byComposite = inventory.index?.bySkillAndSource?.get(`${skill}\0${source}`);
+    if (byComposite) return byComposite;
+    if (Array.isArray(inventory.skills)) {
+      const exact = inventory.skills.find(
+        (s) => (s.name === skill || s.dir_name === skill) && s.source === source
+      );
+      if (exact) return exact;
+    }
   }
   return inventory.index?.byName?.get(skill) ?? inventory.index?.byDirName?.get(skill) ?? null;
+}
+
+function resolveInventoryPath(skillPath, inventory) {
+  if (!skillPath || !inventory?.index?.byPath) return null;
+  const raw = String(skillPath).replace(/\\/g, '/');
+  const direct = inventory.index.byPath.get(raw);
+  if (direct) return direct.path || raw;
+  try {
+    const real = realpathSync(skillPath).replace(/\\/g, '/');
+    const resolved = inventory.index.byPath.get(real);
+    if (resolved) return resolved.path || real;
+  } catch {}
+  return null;
+}
+
+function mergeIntervalSeconds(intervals) {
+  if (!intervals || intervals.length === 0) return 0;
+  const sorted = [...intervals].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let totalMs = 0;
+  let [curStart, curEnd] = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    const [s, e] = sorted[i];
+    if (s <= curEnd) {
+      if (e > curEnd) curEnd = e;
+    } else {
+      totalMs += curEnd - curStart;
+      curStart = s;
+      curEnd = e;
+    }
+  }
+  totalMs += curEnd - curStart;
+  return Math.round(totalMs / 1000);
 }
 
 export function aggregateStats({
@@ -165,9 +202,13 @@ export function aggregateStats({
   const projectTotals = {};
   const allSessions = new Set();
   const sessionBounds = new Map();
-  const sessionExplicitDur = new Map();
+  const sessionDurIntervals = new Map();
+  const sessionUnanchoredDur = new Map();
   const sessionTokensMap = new Map();
   const sessionBodyFallbackMap = new Map();
+  const seenTurnTokenTuples = new Set();
+  const seenBucketTokenTuples = new Set();
+  const usedInvPaths = new Set();
   const promptMap = new Map();
 
   let manualTotal = 0;
@@ -176,6 +217,7 @@ export function aggregateStats({
   let totalOutputTokens = 0;
   let totalCacheReadTokens = 0;
   let totalCacheCreationTokens = 0;
+  let totalPromptInputTokens = 0;
   let totalRecordedTokens = 0;
   let maxSingleDuration = 0;
   const groups = new Map();
@@ -241,12 +283,29 @@ export function aggregateStats({
     bucket.hosts.add(h);
     if (ev.project) bucket.projects.add(ev.project);
     if (ev.model) bucket.models.add(ev.model);
+    if (ev.skill_path) {
+      const matchedInvPath = resolveInventoryPath(ev.skill_path, inventory);
+      if (matchedInvPath) usedInvPaths.add(matchedInvPath);
+    }
 
     if (typeof ev.duration_seconds === 'number' && Number.isFinite(ev.duration_seconds) && ev.duration_seconds > 0) {
       const dur = Math.min(86400, Math.round(ev.duration_seconds));
       bucket.durations.push(dur);
-      sessionExplicitDur.set(globalSessKey, (sessionExplicitDur.get(globalSessKey) || 0) + dur);
       if (dur > maxSingleDuration) maxSingleDuration = dur;
+      const evStartMs = ev.ts ? Date.parse(ev.ts) : NaN;
+      if (Number.isFinite(evStartMs)) {
+        let ivs = sessionDurIntervals.get(globalSessKey);
+        if (!ivs) {
+          ivs = [];
+          sessionDurIntervals.set(globalSessKey, ivs);
+        }
+        ivs.push([evStartMs, evStartMs + dur * 1000]);
+      } else {
+        sessionUnanchoredDur.set(
+          globalSessKey,
+          Math.max(sessionUnanchoredDur.get(globalSessKey) || 0, dur)
+        );
+      }
     }
 
     const inTok = typeof ev.input_tokens === 'number' && Number.isFinite(ev.input_tokens) ? ev.input_tokens : 0;
@@ -255,18 +314,38 @@ export function aggregateStats({
     const ccTok = typeof ev.cache_creation_tokens === 'number' && Number.isFinite(ev.cache_creation_tokens) ? ev.cache_creation_tokens : 0;
     const totTok = typeof ev.total_tokens === 'number' && Number.isFinite(ev.total_tokens) ? ev.total_tokens : 0;
     if (totTok > 0 || inTok > 0 || outTok > 0) {
-      const effectiveTotal = totTok > 0 ? totTok : inTok + outTok + crTok + ccTok;
-      bucket.tokens.input += inTok;
-      bucket.tokens.output += outTok;
-      bucket.tokens.cacheRead += crTok;
-      bucket.tokens.cacheCreation += ccTok;
-      bucket.tokens.total += effectiveTotal;
-      totalInputTokens += inTok;
-      totalOutputTokens += outTok;
-      totalCacheReadTokens += crTok;
-      totalCacheCreationTokens += ccTok;
-      totalRecordedTokens += effectiveTotal;
-      sessionTokensMap.set(globalSessKey, (sessionTokensMap.get(globalSessKey) || 0) + effectiveTotal);
+      const isAnthropicStyle =
+        h === 'claude' ||
+        (totTok > 0 && crTok > 0 && totTok >= inTok + outTok + crTok) ||
+        inTok < crTok;
+      const promptInput = isAnthropicStyle ? inTok + crTok + ccTok : inTok + ccTok;
+      const effectiveTotal =
+        totTok > 0
+          ? totTok
+          : isAnthropicStyle
+            ? inTok + outTok + crTok + ccTok
+            : inTok + outTok + ccTok;
+      const tokTupleKey = `${globalSessKey}\0${ev.origin || ''}\0${inTok}\0${outTok}\0${crTok}\0${ccTok}\0${effectiveTotal}`;
+
+      if (!seenBucketTokenTuples.has(`${key}\0${tokTupleKey}`)) {
+        seenBucketTokenTuples.add(`${key}\0${tokTupleKey}`);
+        bucket.tokens.input += inTok;
+        bucket.tokens.output += outTok;
+        bucket.tokens.cacheRead += crTok;
+        bucket.tokens.cacheCreation += ccTok;
+        bucket.tokens.total += effectiveTotal;
+      }
+
+      if (!seenTurnTokenTuples.has(tokTupleKey)) {
+        seenTurnTokenTuples.add(tokTupleKey);
+        totalInputTokens += inTok;
+        totalOutputTokens += outTok;
+        totalCacheReadTokens += crTok;
+        totalCacheCreationTokens += ccTok;
+        totalPromptInputTokens += promptInput;
+        totalRecordedTokens += effectiveTotal;
+        sessionTokensMap.set(globalSessKey, (sessionTokensMap.get(globalSessKey) || 0) + effectiveTotal);
+      }
     }
 
     if (typeof ev.prompt_preview === 'string' && ev.prompt_preview.trim()) {
@@ -385,15 +464,59 @@ export function aggregateStats({
   const enabledEstTokens = enabledSkills.reduce((acc, s) => acc + (s.est_tokens || 0), 0);
 
   const usedNames = new Set(rows.map((r) => r.skill));
-  const usedBySource = new Set(rows.map((r) => `${r.skill}\0${r.source}`));
+  const usedBySource = new Set();
+  for (const r of rows) {
+    for (const src of r.sources) {
+      usedBySource.add(`${r.skill}\0${src}`);
+    }
+  }
+  const skillsWithKnownSource = new Set();
+  for (const s of enabledSkills) {
+    if (usedBySource.has(`${s.name}\0${s.source}`) || usedBySource.has(`${s.dir_name}\0${s.source}`)) {
+      skillsWithKnownSource.add(s.name);
+      skillsWithKnownSource.add(s.dir_name);
+    }
+  }
 
+  const peersBySkillSource = new Map();
+  for (const s of enabledSkills) {
+    const k = `${s.name}\0${s.source}`;
+    if (!peersBySkillSource.has(k)) peersBySkillSource.set(k, []);
+    peersBySkillSource.get(k).push(s);
+  }
+
+  const claimedFallbackKey = new Set();
   let usedInstalledCount = 0;
   const unusedSkills = [];
 
   for (const s of enabledSkills) {
-    const used = bySource
-      ? usedBySource.has(`${s.name}\0${s.source}`) || usedBySource.has(`${s.dir_name}\0${s.source}`)
-      : usedNames.has(s.name) || usedNames.has(s.dir_name);
+    const compositeKey = `${s.name}\0${s.source}`;
+    const peers = peersBySkillSource.get(compositeKey) || [s];
+    const anyPeerHasPathHit = peers.some((p) => usedInvPaths.has(p.path));
+
+    let used = false;
+    if (usedInvPaths.has(s.path)) {
+      used = true;
+    } else if (anyPeerHasPathHit) {
+      // Another physical copy with the same (name, source) was explicitly read by path, not this one.
+      used = false;
+    } else {
+      const exactSourceMatch =
+        usedBySource.has(compositeKey) || usedBySource.has(`${s.dir_name}\0${s.source}`);
+      const fallbackNameMatch =
+        !bySource &&
+        (usedNames.has(s.name) || usedNames.has(s.dir_name)) &&
+        !skillsWithKnownSource.has(s.name) &&
+        !skillsWithKnownSource.has(s.dir_name);
+      if (exactSourceMatch || fallbackNameMatch) {
+        const claimKey = bySource ? compositeKey : s.name;
+        if (!claimedFallbackKey.has(claimKey)) {
+          claimedFallbackKey.add(claimKey);
+          used = true;
+        }
+      }
+    }
+
     if (used) {
       usedInstalledCount += 1;
     } else {
@@ -521,24 +644,26 @@ export function aggregateStats({
 
   // Compute duration & token aggregates across sessions
   let totalDurationSeconds = 0;
-  let longestTaskSeconds = maxSingleDuration;
+  let maxFallbackSessDur = 0;
   for (const sKey of allSessions) {
-    const expDur = sessionExplicitDur.get(sKey) || 0;
-    let sessDur = expDur;
+    const intervals = sessionDurIntervals.get(sKey);
+    let sessDur = intervals && intervals.length > 0 ? mergeIntervalSeconds(intervals) : sessionUnanchoredDur.get(sKey) || 0;
     if (sessDur === 0) {
       const bounds = sessionBounds.get(sKey);
       if (bounds && bounds.max > bounds.min) {
         const span = Math.round((bounds.max - bounds.min) / 1000);
-        if (span > 0 && span <= 86400) sessDur = span;
+        if (span > 0 && span <= 86400) {
+          sessDur = span;
+          if (span > maxFallbackSessDur) maxFallbackSessDur = span;
+        }
       }
     }
     totalDurationSeconds += sessDur;
-    if (sessDur > longestTaskSeconds) longestTaskSeconds = sessDur;
   }
+  const longestTaskSeconds = maxSingleDuration > 0 ? maxSingleDuration : maxFallbackSessDur;
 
   const totalActivations = rows.reduce((acc, r) => acc + r.activations, 0);
   const totalActiveBodyTokens = rows.reduce((acc, r) => acc + (r.activeLoadTokens || 0), 0);
-  const cacheDenominator = totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens;
 
   let peakSessionTokens = 0;
   if (sessionTokensMap.size > 0) {
@@ -579,7 +704,10 @@ export function aggregateStats({
         cacheRead: totalCacheReadTokens,
         cacheCreation: totalCacheCreationTokens,
         total: totalRecordedTokens,
-        cacheHitRate: cacheDenominator > 0 ? Number((totalCacheReadTokens / cacheDenominator).toFixed(2)) : 0,
+        cacheHitRate:
+          totalPromptInputTokens > 0
+            ? Number((totalCacheReadTokens / totalPromptInputTokens).toFixed(2))
+            : 0,
         activeBodyTokens: totalActiveBodyTokens,
         lifetimeTokens:
           totalRecordedTokens > 0

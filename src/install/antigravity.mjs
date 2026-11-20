@@ -61,21 +61,26 @@ export function installAntigravity({
     stat = lstatSync(target);
   } catch {}
 
-  if (stat?.isSymbolicLink()) {
+  let sameRoot = false;
+  if (stat) {
     try {
-      if (realpathSync(target) === realpathSync(pkgRoot)) {
-        return { host: 'antigravity', status: 'unchanged', mode: 'symlink', target };
-      }
+      sameRoot = realpathSync(target) === realpathSync(pkgRoot);
     } catch {}
+  }
+
+  if (stat?.isSymbolicLink() && sameRoot) {
+    return { host: 'antigravity', status: 'unchanged', mode: 'symlink', target };
   }
 
   const existed = Boolean(stat);
   if (!dryRun) {
-    mkdirSync(target, { recursive: true });
-    for (const rel of ['package.json', 'plugin.json', 'hooks', 'bin', 'src', 'skills']) {
-      const srcPath = join(pkgRoot, rel);
-      if (existsSync(srcPath)) {
-        cpSync(srcPath, join(target, rel), { recursive: true, force: true });
+    if (!sameRoot) {
+      mkdirSync(target, { recursive: true });
+      for (const rel of ['package.json', 'plugin.json', 'hooks', 'bin', 'src', 'skills']) {
+        const srcPath = join(pkgRoot, rel);
+        if (existsSync(srcPath)) {
+          cpSync(srcPath, join(target, rel), { recursive: true, force: true });
+        }
       }
     }
     for (const exe of [

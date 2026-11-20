@@ -19,9 +19,13 @@ import { fileURLToPath } from 'node:url';
 
 export const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 export const SKILL_PATH_RE =
-  /((?:[A-Za-z]:|~)?[^\s"'`<>|;(){}\[\]]*?[\\/]skills[\\/]([A-Za-z0-9][A-Za-z0-9._-]{0,127})[\\/]SKILL\.md)(?=$|[\s"'`<>|;),}\]])/gi;
+  /((?:[A-Za-z]:|~|\$\{?[A-Za-z_]\w*\}?)?[^\s"'`<>|;*?(){}\[\]]*?[\\/](?:skills(?:[\\/](?:\.[A-Za-z0-9._-]+|[A-Za-z0-9][A-Za-z0-9._-]{0,127}))?|plugins[\\/]cache[\\/][^\s"'`<>|;*?(){}\[\]]+?)[\\/]([A-Za-z0-9][A-Za-z0-9._-]{0,127})[\\/]SKILL\.md)(?=$|[\s"'`<>|;),}\]])/gi;
+const MCP_SKILL_URI_RE =
+  /skill:\/\/([A-Za-z0-9._-]+)\/([A-Za-z0-9][A-Za-z0-9._-]{0,127})\/SKILL\.md/gi;
+const SKILL_SCRIPT_PATH_RE =
+  /((?:[A-Za-z]:|~|\$\{?[A-Za-z_]\w*\}?)?[^\s"'`<>|;*?(){}\[\]]*?[\\/]skills[\\/](?:(?:\.[A-Za-z0-9._-]+|[A-Za-z0-9][A-Za-z0-9._-]{0,127})[\\/])?([A-Za-z0-9][A-Za-z0-9._-]{0,127})[\\/](?:scripts|bin)[\\/][A-Za-z0-9._-]+(?:\.(?:py|sh|mjs|js|ts|rb|pl))?)(?=$|[\s"'`<>|;),}\]])/gi;
 const EXPLICIT_SKILL_LINK_RE =
-  /\[[\$@\/]?([A-Za-z0-9][A-Za-z0-9._-]{0,127})\]\(([^()\s]*?[\\/]skills[\\/][A-Za-z0-9][A-Za-z0-9._-]{0,127}[\\/]SKILL\.md)\)/gi;
+  /\[[\$@\/]?([A-Za-z0-9][A-Za-z0-9._-]{0,127}(?::+[A-Za-z0-9][A-Za-z0-9._-]{0,127})?)\]\(([^()\s]*?[\\/]skills[\\/][^\s()]*?[\\/]SKILL\.md)\)/gi;
 const CODEX_SKILL_TAG_RE =
   /<skill>\s*<name>([^<\r\n]+)<\/name>\s*<path>([^<\r\n]*?[\\/]SKILL\.md)<\/path>/gi;
 const AGY_SKILL_TAG_RE =
@@ -35,9 +39,13 @@ const LINE_START_KEYS = ['StartLine', 'start_line', 'offset'];
 const BYTE_OFFSET_KEYS = ['ByteOffset', 'byte_offset'];
 const CMD_KEYS = ['CommandLine', 'command', 'cmd', 'input', 'argv'];
 const WRITE_TOOL_RE = /^(write|edit|replace|apply_patch|multiedit|notebookedit|create_file|delete_file)/i;
-const READ_CMD_RE = /^(cat|sed|head|tail|less|more|bat|nl|awk|type|Get-Content)\b/i;
+const READ_CMD_RE = /^(cat|sed|head|tail|less|more|bat|nl|awk|type|Get-Content|rg|grep)\b/i;
+const SEARCH_DISCOVERY_RE = /\b(?:rg|grep)\b[^;&|\n]*?(?:--files\b|\s-[A-Za-z]*[lrc][A-Za-z]*\b)/i;
+const SCRIPT_EXEC_SEG_RE =
+  /^(?:(?:sudo|env|time|nohup)\s+)*(?:(?:python3?|node|bash|sh|zsh|uv(?:\s+run)?|npx|tsx|ts-node|ruby|perl|source|\.)\b|(?:[A-Za-z]:|~|\.|\/|\$\{?[A-Za-z_]\w*\}?)[^\s"'`<>|;*?(){}\[\]]*?[\\/]skills[\\/])/i;
 const MUTATE_CMD_RE = /(?:^|\s)(?:sed|awk)\s+(?:[^\n]*\s)?(?:-i\S*|--in-place\b)|>{1,2}\s*[^\s]*SKILL\.md/i;
-const CODEX_EXEC_CMD_RE = /\bcmd\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g;
+const CODEX_EXEC_CMD_RE =
+  /(?:["']cmd["']|\bcmd)\s*:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)/g;
 const DEDUPE_WINDOW_MS = 30_000;
 
 function isContinuationReadArgs(safeArgs) {
@@ -165,7 +173,14 @@ export function extractUsageMetrics(usage) {
     ) ?? 0;
   const cacheCreate = num(usage.cache_creation_tokens ?? usage.cache_creation_input_tokens) ?? 0;
   const rawTotal = num(usage.total_tokens ?? usage.totalTokenCount);
-  const computedTotal = input + output + cacheRead + cacheCreate;
+  // OpenAI (cached_input_tokens) and Gemini (cachedContentTokenCount) report input_tokens inclusive of cached reads.
+  const isInclusiveCache =
+    (usage.cached_input_tokens !== undefined || usage.cachedContentTokenCount !== undefined) &&
+    usage.cache_read_input_tokens === undefined &&
+    input >= cacheRead;
+  const computedTotal = isInclusiveCache
+    ? input + output + cacheCreate
+    : input + output + cacheRead + cacheCreate;
   const total = rawTotal !== null && rawTotal > 0 ? rawTotal : computedTotal;
   if (total <= 0) return null;
   return {
@@ -234,13 +249,27 @@ export function normalizeHookPayload(host, payload) {
 
 export function resolveSource(skillPath, cwd = '', homeDir = homedir()) {
   if (!skillPath) return 'unknown';
+  const rawPath = String(skillPath).trim();
+  const uriMatch = rawPath.match(/^skill:\/\/([^/]+)\//i);
+  if (uriMatch) return `plugin:${uriMatch[1]}`;
+
   const normHome = String(homeDir).replace(/\\/g, '/').replace(/\/+$/, '');
   const normCwd = String(cwd || '').replace(/\\/g, '/').replace(/\/+$/, '');
-  let p = String(skillPath).replace(/\\/g, '/');
+  let p = rawPath.replace(/\\/g, '/');
   if (p.startsWith('~/')) p = `${normHome}${p.slice(1)}`;
 
-  const cacheMatch = p.match(/\/plugins\/cache\/[^/]+\/([^/]+)\//);
-  if (cacheMatch) return `plugin:${cacheMatch[1]}`;
+  const cacheMatch = p.match(/\/plugins\/cache\/([^/]+)\/([^/]+)\//);
+  if (cacheMatch) {
+    const seg1 = cacheMatch[1];
+    const seg2 = cacheMatch[2];
+    if (/^(?:v?\d+\.\d+(?:\.\d+)?(?:-[A-Za-z0-9._-]+)?|latest)$/i.test(seg2)) {
+      return `plugin:${seg1}`;
+    }
+    return `plugin:${seg2}`;
+  }
+
+  const tmpMktMatch = p.match(/\/\.tmp\/marketplaces\/([^/]+)\/skills\//);
+  if (tmpMktMatch) return `plugin:${tmpMktMatch[1]}`;
 
   const pluginMatch = p.match(/\/plugins\/([^/]+)\//);
   if (pluginMatch) return `plugin:${pluginMatch[1]}`;
@@ -258,7 +287,7 @@ export function resolveSource(skillPath, cwd = '', homeDir = homedir()) {
 
   if (
     (normCwd && p.startsWith(`${normCwd}/`)) ||
-    /\/(?:\.agents|\.agent|\.claude|\.gemini)\/skills\//.test(p)
+    /(?:^|\/)(?:\.agents|\.agent|\.claude|\.gemini|\.codex)\/skills\//.test(p)
   ) {
     return 'project';
   }
@@ -266,21 +295,40 @@ export function resolveSource(skillPath, cwd = '', homeDir = homedir()) {
   return 'unknown';
 }
 
+function unescapeInlineString(body, quoteChar) {
+  let out = body
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\\\/g, '\\');
+  if (quoteChar === "'") out = out.replace(/\\'/g, "'");
+  else if (quoteChar === '`') out = out.replace(/\\`/g, '`').replace(/\\\$/g, '$');
+  return out;
+}
+
 function extractCodexCommandStrings(text) {
   const extracted = [];
+  CODEX_EXEC_CMD_RE.lastIndex = 0;
   for (const m of text.matchAll(CODEX_EXEC_CMD_RE)) {
     const lit = m[1];
     if (lit[0] === '"') {
       try {
         extracted.push(JSON.parse(lit));
       } catch {
-        extracted.push(lit.slice(1, -1));
+        extracted.push(unescapeInlineString(lit.slice(1, -1), '"').replace(/\\"/g, '"'));
       }
     } else {
-      extracted.push(lit.slice(1, -1).replace(/\\(['\\])/g, '$1'));
+      extracted.push(unescapeInlineString(lit.slice(1, -1), lit[0]));
     }
   }
   return extracted.length > 0 ? extracted : [text];
+}
+
+function splitNamespaceSkill(raw) {
+  const clean = String(raw || '').trim();
+  const m = clean.match(/^([A-Za-z0-9._-]+):+([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/);
+  if (m) return { ns: m[1], name: m[2], raw: clean };
+  return { ns: null, name: clean, raw: clean };
 }
 
 export function detectSkillCalls({
@@ -294,17 +342,12 @@ export function detectSkillCalls({
   const safeArgs = args && typeof args === 'object' ? args : {};
 
   if (tool === 'Skill' && safeArgs.skill) {
-    const rawSkill = String(safeArgs.skill).trim();
-    if (!rawSkill) return [];
-    const colon = rawSkill.indexOf(':');
-    if (colon > 0 && colon < rawSkill.length - 1) {
-      const ns = rawSkill.slice(0, colon).trim();
-      const name = rawSkill.slice(colon + 1).trim();
-      if (SKILL_NAME_RE.test(name)) {
-        return [{ skill: name, raw_skill: rawSkill, source: `plugin:${ns}`, via: 'skill_tool' }];
-      }
+    const { ns, name, raw } = splitNamespaceSkill(safeArgs.skill);
+    if (!raw) return [];
+    if (ns && SKILL_NAME_RE.test(name)) {
+      return [{ skill: name, raw_skill: raw, source: `plugin:${ns}`, via: 'skill_tool' }];
     }
-    return [{ skill: rawSkill, via: 'skill_tool' }];
+    return [{ skill: raw, via: 'skill_tool' }];
   }
 
   if (tool === 'activate_skill') {
@@ -318,17 +361,20 @@ export function detectSkillCalls({
   const hits = [];
   const seenPaths = new Set();
 
-  const pushPathHit = (skill, skillPath, via) => {
-    const cleanSkill = String(skill || '').trim();
+  const pushPathHit = (skill, skillPath, via, explicitSource = null) => {
+    const { ns, name, raw } = splitNamespaceSkill(skill);
     const cleanPath = String(skillPath || '').trim();
-    if (!cleanSkill || !cleanPath) return;
+    if (!name || !cleanPath) return;
     const normKey = cleanPath.replace(/\\/g, '/');
     if (seenPaths.has(normKey)) return;
     seenPaths.add(normKey);
+    const resolved = explicitSource || resolveSource(cleanPath, cwd, homeDir);
+    const source = resolved === 'unknown' && ns ? `plugin:${ns}` : resolved;
     hits.push({
-      skill: cleanSkill,
+      skill: name,
+      ...(raw !== name ? { raw_skill: raw } : {}),
       skill_path: cleanPath,
-      source: resolveSource(cleanPath, cwd, homeDir),
+      source,
       via,
     });
   };
@@ -358,7 +404,16 @@ export function detectSkillCalls({
 
   if (WRITE_TOOL_RE.test(tool ?? '')) return hits;
 
+  const collectMcpUris = (text, via) => {
+    if (!text.toLowerCase().includes('skill://')) return;
+    MCP_SKILL_URI_RE.lastIndex = 0;
+    for (const m of text.matchAll(MCP_SKILL_URI_RE)) {
+      pushPathHit(m[2], m[0], via, `plugin:${m[1]}`);
+    }
+  };
+
   const collectFromText = (text, via) => {
+    collectMcpUris(text, via);
     if (!text.toLowerCase().includes('skill.md')) return;
     SKILL_PATH_RE.lastIndex = 0;
     for (const m of text.matchAll(SKILL_PATH_RE)) {
@@ -368,6 +423,9 @@ export function detectSkillCalls({
 
   if (isContinuationReadArgs(safeArgs)) return [];
 
+  if (typeof safeArgs.uri === 'string') {
+    collectMcpUris(unwrapArg(safeArgs.uri), 'read');
+  }
   for (const key of PATH_KEYS) {
     if (typeof safeArgs[key] === 'string') {
       collectFromText(unwrapArg(safeArgs[key]), 'read');
@@ -396,17 +454,45 @@ export function detectSkillCalls({
 
   for (const rawVal of shellInputs) {
     const text = unwrapArg(rawVal);
-    if (!text.toLowerCase().includes('skill.md')) continue;
+    const lowText = text.toLowerCase();
+    if (!lowText.includes('skill.md') && !lowText.includes('skill://') && !lowText.includes('/skills/')) {
+      continue;
+    }
+
+    collectMcpUris(text, 'read');
+
+    const beforeCount = hits.length;
     const candidates = extractCodexCommandStrings(text);
     for (const cand of candidates) {
       for (const rawSeg of cand.split(/&&|\|\||;|\n/)) {
-        if (!rawSeg.toLowerCase().includes('skill.md')) continue;
-        const seg = rawSeg.trim().replace(/^(?:[A-Za-z_]\w*=\S+\s+)+/, '');
-        if (!READ_CMD_RE.test(seg)) continue;
+        const lowSeg = rawSeg.toLowerCase();
+        const hasSkillMd = lowSeg.includes('skill.md');
+        const hasSkillScript = /[\\/]skills[\\/][^;\n]*?[\\/](?:scripts|bin)[\\/]/i.test(rawSeg);
+        if (!hasSkillMd && !hasSkillScript) continue;
+        const seg = rawSeg.trim().replace(/^(?:[A-Za-z_]\w*=(?:"[^"]*"|'[^']*'|\S+)\s+)+/, '');
         if (MUTATE_CMD_RE.test(seg)) continue;
-        if (isContinuationShellSegment(seg)) continue;
-        collectFromText(seg, 'shell_read');
+
+        if (hasSkillMd && READ_CMD_RE.test(seg) && !SEARCH_DISCOVERY_RE.test(seg) && !isContinuationShellSegment(seg)) {
+          collectFromText(seg, 'shell_read');
+        } else if (hasSkillScript && SCRIPT_EXEC_SEG_RE.test(seg)) {
+          SKILL_SCRIPT_PATH_RE.lastIndex = 0;
+          for (const m of seg.matchAll(SKILL_SCRIPT_PATH_RE)) {
+            const skillMdPath = m[1].replace(/[\\/](?:scripts|bin)[\\/][^\\/]+$/i, '/SKILL.md');
+            pushPathHit(m[2], skillMdPath, 'shell_read');
+          }
+        }
       }
+    }
+
+    // Handle JS orchestration inside Codex's `exec` tool (arrays + fs.readFileSync / Promise.all / specs)
+    if (
+      tool === 'exec' &&
+      hits.length === beforeCount &&
+      lowText.includes('skill.md') &&
+      /\b(?:readFileSync|readFile|exec_command|sed|cat|head)\b/.test(text) &&
+      !/\b(?:writeFileSync|writeFile|apply_patch|rmSync|unlinkSync)\b/.test(text)
+    ) {
+      collectFromText(text, 'shell_read');
     }
   }
 
@@ -597,11 +683,30 @@ export function main() {
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const { storeCwd, storePrompts } = readConfigFlags(home);
 
-  const needsTail = !n.usage || n.durationSeconds === undefined || (storePrompts && !n.prompt);
+  const needsTail =
+    !n.usage ||
+    n.durationSeconds === undefined ||
+    String(host).startsWith('antigravity') ||
+    (storePrompts && !n.prompt);
   const tailCtx = needsTail && n.transcriptPath ? readTranscriptTailContext(n.transcriptPath, nowMs) : {};
   const usage = n.usage ?? tailCtx.usage ?? null;
   const durationSeconds = n.durationSeconds ?? tailCtx.durationSeconds;
   const rawPromptText = n.prompt ?? tailCtx.promptText;
+  if (String(host).startsWith('antigravity') && typeof rawPromptText === 'string' && rawPromptText.includes('<SKILL>')) {
+    const normStr = (v) => String(v || '').replace(/^.*:/, '').replace(/_/g, '-').toLowerCase();
+    const slashNames = new Set();
+    const slashPaths = new Set();
+    AGY_SKILL_TAG_RE.lastIndex = 0;
+    for (const m of rawPromptText.matchAll(AGY_SKILL_TAG_RE)) {
+      slashNames.add(normStr(m[1]));
+      slashPaths.add(m[2].replace(/\\/g, '/'));
+    }
+    for (const h of uniqueHits) {
+      if (slashNames.has(normStr(h.skill)) || (h.skill_path && slashPaths.has(h.skill_path.replace(/\\/g, '/')))) {
+        h.via = 'slash_command';
+      }
+    }
+  }
   const promptPreview = storePrompts && rawPromptText ? sanitizePromptPreview(rawPromptText) : '';
 
   const lines = uniqueHits.map((h, idx) =>

@@ -198,7 +198,20 @@ function readCodexConfigStates(homeDir) {
   return { disabledSkillPaths, pluginEnabled };
 }
 
-function listImmediateSkillDirs(skillsRoot) {
+const SKIP_SKILL_SUBDIRS = new Set([
+  'node_modules',
+  'scripts',
+  'bin',
+  'references',
+  'examples',
+  'resources',
+  'assets',
+  'test',
+  'tests',
+  'docs',
+]);
+
+function listImmediateSkillDirs(skillsRoot, { maxDepth = 2, allowDotSystem = true } = {}) {
   if (!existsSync(skillsRoot)) return [];
   let entries;
   try {
@@ -208,11 +221,19 @@ function listImmediateSkillDirs(skillsRoot) {
   }
   const results = [];
   for (const e of entries) {
-    if (e.name.startsWith('.')) continue;
     if (!e.isDirectory() && !e.isSymbolicLink()) continue;
-    const skillMd = join(skillsRoot, e.name, 'SKILL.md');
+    const full = join(skillsRoot, e.name);
+    if (e.name === '.system' && allowDotSystem) {
+      results.push(...listImmediateSkillDirs(full, { maxDepth: 1, allowDotSystem: false }));
+      continue;
+    }
+    if (e.name.startsWith('.') || SKIP_SKILL_SUBDIRS.has(e.name)) continue;
+    const skillMd = join(full, 'SKILL.md');
     if (existsSync(skillMd)) {
       results.push({ dirName: e.name, skillMd });
+    }
+    if (maxDepth > 1) {
+      results.push(...listImmediateSkillDirs(full, { maxDepth: maxDepth - 1, allowDotSystem: false }));
     }
   }
   return results;
@@ -230,11 +251,32 @@ function listDirectories(dir) {
   }
 }
 
+function compareSemverLike(a, b) {
+  if (a === b) return 0;
+  if (a === 'latest') return 1;
+  if (b === 'latest') return -1;
+  const pa = String(a).replace(/^v/i, '').split(/[.-]/);
+  const pb = String(b).replace(/^v/i, '').split(/[.-]/);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const sa = pa[i] ?? '';
+    const sb = pb[i] ?? '';
+    const na = /^\d+$/.test(sa) ? Number(sa) : null;
+    const nb = /^\d+$/.test(sb) ? Number(sb) : null;
+    if (na !== null && nb !== null) {
+      if (na !== nb) return na - nb;
+    } else if (sa !== sb) {
+      return sa.localeCompare(sb);
+    }
+  }
+  return a.localeCompare(b);
+}
+
 function pickCodexCacheVersion(pluginDir) {
   const versions = listDirectories(pluginDir);
   if (versions.length === 0) return null;
   if (versions.includes('latest')) return 'latest';
-  return versions[versions.length - 1];
+  return [...versions].sort(compareSemverLike).pop();
 }
 
 function walkClaudePluginSkills(baseDir, depth = 0, out = []) {
@@ -326,15 +368,56 @@ export function scanInventory({ homeDir = homedir(), cwd = process.cwd(), includ
   }
 
   const codexCacheRoot = join(homeDir, '.codex', 'plugins', 'cache');
-  for (const mkt of listDirectories(codexCacheRoot)) {
+  const explicitByPluginName = new Map();
+  for (const fullKey of codexPluginEnabled.keys()) {
+    const at = fullKey.indexOf('@');
+    if (at > 0) explicitByPluginName.set(fullKey.slice(0, at), true);
+  }
+  const mktPriority = ['openai-curated-remote', 'openai-bundled', 'openai-primary-runtime', 'plugins-cli', 'openai-curated'];
+  const markets = listDirectories(codexCacheRoot).sort((a, b) => {
+    const ia = mktPriority.indexOf(a);
+    const ib = mktPriority.indexOf(b);
+    if (ia !== -1 || ib !== -1) {
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    }
+    return a.localeCompare(b);
+  });
+
+  const registeredCodexPluginSkills = new Map(); // plugin:<name>\0<dirName> -> primary entry canon path
+  const extraByPathPending = []; // { regKey, canon }
+
+  for (const mkt of markets) {
     for (const pluginName of listDirectories(join(codexCacheRoot, mkt))) {
+      if (/^plugin-install-/i.test(pluginName)) continue;
       const pluginRoot = join(codexCacheRoot, mkt, pluginName);
       const ver = pickCodexCacheVersion(pluginRoot);
       if (!ver) continue;
+
       const key = `${pluginName}@${mkt}`;
+      const isExplicitHere = codexPluginEnabled.has(key);
+      const isDuplicateMarketForExplicit = !isExplicitHere && explicitByPluginName.has(pluginName);
+
+      const skillsInVer = listImmediateSkillDirs(join(pluginRoot, ver, 'skills'));
+      if (skillsInVer.length === 0) {
+        const directSkillMd = join(pluginRoot, ver, pluginName, 'SKILL.md');
+        if (existsSync(directSkillMd)) {
+          skillsInVer.push({ dirName: pluginName, skillMd: directSkillMd });
+        }
+      }
+
       const enabled = codexPluginEnabled.get(key) !== false;
-      for (const item of listImmediateSkillDirs(join(pluginRoot, ver, 'skills'))) {
-        register({ ...item, host: 'codex', source: `plugin:${pluginName}`, enabled });
+      for (const item of skillsInVer) {
+        const src = `plugin:${pluginName}`;
+        const regKey = `${src}\0${item.dirName}`;
+        const canon = normalizePath(item.skillMd);
+        if (isDuplicateMarketForExplicit || registeredCodexPluginSkills.has(regKey)) {
+          extraByPathPending.push({ regKey, canon });
+          continue;
+        }
+        register({ ...item, host: 'codex', source: src, enabled });
+        if (byCanonPath.has(canon)) {
+          registeredCodexPluginSkills.set(regKey, canon);
+        }
       }
     }
   }
@@ -379,9 +462,14 @@ export function scanInventory({ homeDir = homedir(), cwd = process.cwd(), includ
   const byPath = new Map();
   const byDirName = new Map();
   const byName = new Map();
+  const bySkillAndSource = new Map();
 
   for (const entry of skills) {
     byPath.set(entry.path, entry);
+    bySkillAndSource.set(`${entry.name}\0${entry.source}`, entry);
+    if (entry.dir_name !== entry.name) {
+      bySkillAndSource.set(`${entry.dir_name}\0${entry.source}`, entry);
+    }
     const prevDir = byDirName.get(entry.dir_name);
     if (!prevDir || (!prevDir.enabled && entry.enabled)) {
       byDirName.set(entry.dir_name, entry);
@@ -392,8 +480,16 @@ export function scanInventory({ homeDir = homedir(), cwd = process.cwd(), includ
     }
   }
 
+  for (const { regKey, canon: dupCanon } of extraByPathPending) {
+    const primaryCanon = registeredCodexPluginSkills.get(regKey);
+    const primary = primaryCanon ? byCanonPath.get(primaryCanon) : null;
+    if (primary && !byPath.has(dupCanon)) {
+      byPath.set(dupCanon, primary);
+    }
+  }
+
   return {
     skills,
-    index: { byPath, byDirName, byName },
+    index: { byPath, byDirName, byName, bySkillAndSource },
   };
 }

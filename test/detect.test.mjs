@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   detectSkillCalls,
+  extractUsageMetrics,
   normalizeHookPayload,
   resolveHost,
   resolveSource,
@@ -270,4 +271,118 @@ test('resolveHost and normalizeHookPayload handle all 4 hosts', () => {
   assert.equal(norm.cwd, '/tmp/proj');
   assert.equal(norm.model, 'm1');
   assert.equal(norm.failed, false);
+});
+
+test('detects .system, nested gstack, JSON/backtick/JS-array exec, rg -n, MCP skill://, scripts, and namespace stripping', () => {
+  // 1. .system and 2-level nested paths + $BASE variable + single-skill plugin cache
+  const nestedPaths = [
+    ['exec_command', { cmd: "sed -n '1,120p' /Users/tester/.codex/skills/.system/review-agent/SKILL.md" }, 'review-agent', 'personal'],
+    ['exec_command', { cmd: 'rg -n "^## " /Users/tester/.codex/skills/gstack/plan-ceo-review/SKILL.md | head -80' }, 'plan-ceo-review', 'personal'],
+    ['exec_command', { cmd: 'sed -n \'1,200p\' "$BASE/skills/validation/SKILL.md"' }, 'validation', 'unknown'],
+    ['exec_command', { cmd: 'cat /Users/tester/.codex/plugins/cache/openai-bundled/computer-use/1.0.1001895/computer-use/SKILL.md' }, 'computer-use', 'plugin:computer-use'],
+  ];
+  for (const [tool, args, expectedSkill, expectedSource] of nestedPaths) {
+    const res = detectSkillCalls({ tool, args, homeDir: '/Users/tester' });
+    assert.equal(res.length, 1, `Expected 1 hit for ${JSON.stringify(args)}`);
+    assert.equal(res[0].skill, expectedSkill);
+    assert.equal(res[0].source, expectedSource);
+  }
+
+  // rg --files discovery remains rejected
+  const rgDiscovery = detectSkillCalls({
+    tool: 'exec_command',
+    args: { cmd: "rg --files -g '*.md' /Users/tester/.codex/plugins/cache/openai-curated/skills" },
+    homeDir: '/Users/tester',
+  });
+  assert.equal(rgDiscovery.length, 0);
+
+  // 2. Codex exec JSON "cmd":, backtick cmd: `...`, JS array/readFileSync, MCP skill://
+  const jsonCmdExec = detectSkillCalls({
+    tool: 'exec',
+    args: {
+      input: 'const r = await tools.exec_command({"cmd":"cat /Users/tester/.agents/skills/understand-chat/SKILL.md"});',
+    },
+    homeDir: '/Users/tester',
+  });
+  assert.equal(jsonCmdExec.length, 1);
+  assert.equal(jsonCmdExec[0].skill, 'understand-chat');
+
+  const backtickExec = detectSkillCalls({
+    tool: 'exec',
+    args: {
+      input: 'const r = await tools.exec_command({cmd: `sed -n \'1,200p\' /Users/tester/.agents/skills/finding-discovery/SKILL.md`});',
+    },
+    homeDir: '/Users/tester',
+  });
+  assert.equal(backtickExec.length, 1);
+  assert.equal(backtickExec[0].skill, 'finding-discovery');
+
+  const jsLoopExec = detectSkillCalls({
+    tool: 'exec',
+    args: {
+      input: 'const files = ["/Users/tester/.agents/skills/a-skill/SKILL.md", "/Users/tester/.agents/skills/b-skill/SKILL.md"]; for (const f of files) fs.readFileSync(f, "utf8");',
+    },
+    homeDir: '/Users/tester',
+  });
+  assert.deepEqual(
+    jsLoopExec.map((h) => h.skill),
+    ['a-skill', 'b-skill']
+  );
+
+  const mcpExec = detectSkillCalls({
+    tool: 'exec',
+    args: {
+      input: 'const r = await tools.read_mcp_resource({server:"codex_apps",uri:"skill://figma/figma-create-new-file/SKILL.md"});',
+    },
+    homeDir: '/Users/tester',
+  });
+  assert.equal(mcpExec.length, 1);
+  assert.equal(mcpExec[0].skill, 'figma-create-new-file');
+  assert.equal(mcpExec[0].source, 'plugin:figma');
+  assert.equal(mcpExec[0].via, 'read');
+
+  // 3. Direct skill script execution
+  const scriptHit = detectSkillCalls({
+    tool: 'run_command',
+    args: { CommandLine: 'python3 ~/.agents/skills/memory-recall/scripts/search_memory.py --query auth' },
+    homeDir: '/Users/tester',
+  });
+  assert.equal(scriptHit.length, 1);
+  assert.equal(scriptHit[0].skill, 'memory-recall');
+  assert.equal(scriptHit[0].source, 'personal');
+
+  // 4. Namespace stripping in Codex <skill> tag & resolveSource edge cases
+  const nsTag = detectSkillCalls({
+    tool: 'UserPromptSubmit',
+    args: {},
+    prompt: '<skill>\n<name>superpowers:writing-plans</name>\n<path>/Users/tester/.codex/plugins/cache/superpowers-dev/superpowers/6.3.0/skills/writing-plans/SKILL.md</path>\n</skill>',
+    homeDir: '/Users/tester',
+  });
+  assert.equal(nsTag.length, 1);
+  assert.equal(nsTag[0].skill, 'writing-plans');
+  assert.equal(nsTag[0].raw_skill, 'superpowers:writing-plans');
+  assert.equal(nsTag[0].source, 'plugin:superpowers');
+
+  assert.equal(
+    resolveSource('/Users/tester/.codex/plugins/cache/swiftui-expert/5.2.0/skills/swiftui-expert-skill/SKILL.md', '', '/Users/tester'),
+    'plugin:swiftui-expert'
+  );
+  assert.equal(
+    resolveSource('/Users/tester/.codex/.tmp/marketplaces/ponytail/skills/ponytail-review/SKILL.md', '', '/Users/tester'),
+    'plugin:ponytail'
+  );
+  assert.equal(resolveSource('.agents/skills/swiftui-pro/SKILL.md', '', '/Users/tester'), 'project');
+  assert.equal(resolveSource('skill://figma/figma-use/SKILL.md', '', '/Users/tester'), 'plugin:figma');
+
+  // 5. extractUsageMetrics avoids double-counting OpenAI cached_input_tokens when total_tokens omitted
+  assert.deepEqual(
+    extractUsageMetrics({ input_tokens: 48205, cached_input_tokens: 48000, output_tokens: 171 }),
+    {
+      input_tokens: 48205,
+      output_tokens: 171,
+      cache_read_tokens: 48000,
+      cache_creation_tokens: 0,
+      total_tokens: 48376,
+    }
+  );
 });

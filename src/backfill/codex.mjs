@@ -72,6 +72,7 @@ export function backfillCodex({ homeDir = homedir(), since = null, storePrompts 
 
   const sinceMs = since instanceof Date ? since.getTime() : since ? Date.parse(since) : null;
   const events = [];
+  const seenHardwareCalls = new Set();
   let skippedZst = 0;
 
   for (const file of files) {
@@ -86,22 +87,33 @@ export function backfillCodex({ homeDir = homedir(), since = null, storePrompts 
       continue;
     }
     const raw = readRes.text;
-    if (!raw || (!raw.includes('SKILL.md') && !raw.includes('<skill>'))) continue;
+    if (
+      !raw ||
+      (!raw.includes('SKILL.md') &&
+        !raw.includes('<skill>') &&
+        !raw.includes('skill://') &&
+        !raw.includes('/skills/'))
+    ) {
+      continue;
+    }
 
     let sessionId = sessionIdFromFilename(file);
+    let hasSessionMeta = false;
     let cwd = '';
     let model = undefined;
 
     const pendingCalls = [];
     const failedCalls = new Set();
     let turnIdx = 0;
+    let turnActive = false;
+    let turnHasToolOrAssistant = false;
     let turnPrompt = '';
     const turnPromptSkills = new Set();
     const turnEndMsMap = new Map();
     const turnUsageMap = new Map();
 
     const recordTurnTs = (id, tsStr) => {
-      if (!tsStr) return;
+      if (!tsStr || id <= 0) return;
       const ms = Date.parse(tsStr);
       if (!Number.isFinite(ms)) return;
       const prev = turnEndMsMap.get(id);
@@ -118,32 +130,64 @@ export function backfillCodex({ homeDir = homedir(), since = null, storePrompts 
       }
 
       if (obj.type === 'session_meta' && obj.payload) {
-        if (obj.payload.id || obj.payload.session_id) {
+        if (!hasSessionMeta && (obj.payload.id || obj.payload.session_id)) {
           sessionId = obj.payload.id || obj.payload.session_id;
+          hasSessionMeta = true;
         }
-        if (obj.payload.cwd) cwd = obj.payload.cwd;
+        if (!cwd && obj.payload.cwd) cwd = obj.payload.cwd;
+        continue;
+      }
+
+      if (obj.type === 'event_msg' && obj.payload?.type === 'task_started') {
+        turnIdx += 1;
+        turnActive = true;
+        turnHasToolOrAssistant = false;
+        turnPromptSkills.clear();
+        turnPrompt = '';
+        recordTurnTs(turnIdx, obj.timestamp);
+        continue;
+      }
+
+      if (obj.type === 'event_msg' && (obj.payload?.type === 'task_complete' || obj.payload?.type === 'turn_aborted')) {
+        if (turnActive) {
+          recordTurnTs(turnIdx, obj.timestamp);
+          turnActive = false;
+          turnHasToolOrAssistant = false;
+        }
         continue;
       }
 
       if (obj.type === 'turn_context' && obj.payload) {
         if (obj.payload.cwd) cwd = obj.payload.cwd;
         if (obj.payload.model) model = obj.payload.model;
-        turnPromptSkills.clear();
-        turnIdx += 1;
-        turnPrompt = '';
+        if (!turnActive || turnHasToolOrAssistant) {
+          turnIdx += 1;
+          turnActive = true;
+          turnHasToolOrAssistant = false;
+          turnPromptSkills.clear();
+          turnPrompt = '';
+        }
         recordTurnTs(turnIdx, obj.timestamp);
         continue;
       }
 
-      recordTurnTs(turnIdx, obj.timestamp);
+      if (turnActive) recordTurnTs(turnIdx, obj.timestamp);
 
       if (obj.type === 'event_msg' && obj.payload?.type === 'token_count') {
         const u = extractUsageMetrics(obj.payload?.info?.last_token_usage ?? obj.payload?.usage);
-        if (u) turnUsageMap.set(turnIdx, u);
+        if (u && turnIdx > 0) turnUsageMap.set(turnIdx, u);
         continue;
       }
 
       if (obj.type !== 'response_item' || !obj.payload) continue;
+      if (!turnActive) {
+        turnIdx += 1;
+        turnActive = true;
+        turnHasToolOrAssistant = false;
+        turnPromptSkills.clear();
+        turnPrompt = '';
+        recordTurnTs(turnIdx, obj.timestamp);
+      }
       const p = obj.payload;
 
       const itemUsage = extractUsageMetrics(obj.usage ?? p.usage);
@@ -202,6 +246,7 @@ export function backfillCodex({ homeDir = homedir(), since = null, storePrompts 
       }
 
       if (p.type === 'message' && p.role === 'assistant') {
+        turnHasToolOrAssistant = true;
         turnPromptSkills.clear();
         continue;
       }
@@ -214,10 +259,18 @@ export function backfillCodex({ homeDir = homedir(), since = null, storePrompts 
       }
 
       if (p.type !== 'function_call' && p.type !== 'custom_tool_call') continue;
+      turnHasToolOrAssistant = true;
       turnPromptSkills.clear();
 
       const textToScan = p.type === 'function_call' ? p.arguments : p.input;
-      if (typeof textToScan !== 'string' || !textToScan.includes('SKILL.md')) continue;
+      if (
+        typeof textToScan !== 'string' ||
+        (!textToScan.includes('SKILL.md') &&
+          !textToScan.includes('skill://') &&
+          !textToScan.includes('/skills/'))
+      ) {
+        continue;
+      }
 
       let argsObj = {};
       if (p.type === 'function_call') {
@@ -275,6 +328,11 @@ export function backfillCodex({ homeDir = homedir(), since = null, storePrompts 
       const promptPreview = storePrompts && call.promptText ? sanitizePromptPreview(call.promptText) : '';
 
       hits.forEach((h, hitIdx) => {
+        if (call.callId && !String(call.callId).startsWith('prompt_')) {
+          const hwKey = `${call.callId}#${hitIdx}`;
+          if (seenHardwareCalls.has(hwKey)) return;
+          seenHardwareCalls.add(hwKey);
+        }
         events.push({
           v: 1,
           id: `codex:${sessionId}:${call.callId || call.idx}#${hitIdx}`,

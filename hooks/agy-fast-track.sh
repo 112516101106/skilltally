@@ -9,7 +9,7 @@ if [ "${SKILLTALLY_DEBUG:-0}" = "1" ] || [ -f "${SKILLTALLY_HOME:-$HOME/.skillta
   run_node=1
 else
   case "$in" in
-    *SKILL.md*) run_node=1 ;;
+    *SKILL.md*|*/skills/*/scripts/*|*/skills/*/bin/*) run_node=1 ;;
   esac
 fi
 

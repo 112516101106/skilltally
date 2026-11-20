@@ -50,6 +50,19 @@ function parseChatFile(filePath, raw) {
       if (!line.trim()) continue;
       try {
         const obj = JSON.parse(line);
+        const patch = obj.$set && typeof obj.$set === 'object' ? obj.$set : null;
+        if (patch) {
+          if (patch.sessionId) sessionId = patch.sessionId;
+          if (!startTime && (patch.startTime || patch.lastUpdated)) {
+            startTime = patch.startTime || patch.lastUpdated;
+          }
+          if (!cwd && patch.cwd) cwd = patch.cwd;
+          if (Array.isArray(patch.messages)) {
+            messages.length = 0;
+            messages.push(...patch.messages);
+          }
+          continue;
+        }
         if (obj.sessionId) sessionId = obj.sessionId;
         if (!startTime && obj.timestamp) startTime = obj.timestamp;
         if (!cwd && obj.cwd) cwd = obj.cwd;

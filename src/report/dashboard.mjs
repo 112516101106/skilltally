@@ -991,7 +991,7 @@ export function generateDashboardHtml({
       ['Single-project global skills', projCands.length + (projCands.length === 1 ? ' candidate' : ' candidates')],
       ['Manual-only skills', String(manualOnly.length)],
       ['Skills explored', String(inv.used || 0)],
-      ['Total skills used', String(totals.events || 0)],
+      ['Total skill reads', String(totals.events || 0)],
       ['Total skills installed', String(inv.enabled || 0)],
     ];
 

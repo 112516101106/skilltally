@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import zlib from 'node:zlib';
+import { backfillAntigravity } from '../src/backfill/antigravity.mjs';
 import { backfillClaude } from '../src/backfill/claude.mjs';
+import { backfillCodex } from '../src/backfill/codex.mjs';
 import { backfillGemini } from '../src/backfill/gemini.mjs';
 import { runBackfill } from '../src/backfill/index.mjs';
 import { readAllEvents } from '../src/core/store.mjs';
@@ -192,6 +194,125 @@ test('backfills Antigravity (including truncated_fields and antigravity-ide), Co
     const merged = dedupeEvents([...events, hookEv]);
     assert.equal(merged.length, events.length);
     assert.equal(merged.find((e) => e.id === hookEv.id)?.origin, 'hook');
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('handles Codex forked session_meta, post-task_complete idle gaps, Antigravity manual slash preservation & scripts, and Gemini $set.messages', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'skilltally-audit-bf-'));
+  const homeDir = join(tmp, 'home');
+  const dataHome = join(tmp, 'data');
+
+  try {
+    // 1. Codex parent & forked rollout + post-task_complete multi-day idle event
+    const codexSessDir = join(homeDir, '.codex', 'sessions', '2026', '10', '01');
+    mkdirSync(codexSessDir, { recursive: true });
+    const parentId = '00000000-0000-4000-8000-000000000101';
+    const childId = '00000000-0000-4000-8000-000000000102';
+
+    const parentLines = [
+      JSON.stringify({ timestamp: '2026-10-01T10:00:00.000Z', type: 'session_meta', payload: { id: parentId, cwd: '/Users/tester/app' } }),
+      JSON.stringify({ timestamp: '2026-10-01T10:00:01.000Z', type: 'event_msg', payload: { type: 'task_started' } }),
+      JSON.stringify({ timestamp: '2026-10-01T10:00:01.500Z', type: 'turn_context', payload: { cwd: '/Users/tester/app', model: 'gpt-6.1-sol' } }),
+      JSON.stringify({ timestamp: '2026-10-01T10:00:02.000Z', type: 'response_item', payload: { type: 'message', id: 'msg_parent_1', role: 'user', content: [{ type: 'input_text', text: '<skill>\n<name>superpowers:writing-plans</name>\n<path>/Users/tester/.codex/plugins/cache/superpowers-dev/superpowers/6.3.0/skills/writing-plans/SKILL.md</path>\n</skill>' }] } }),
+      JSON.stringify({ timestamp: '2026-10-01T10:00:05.000Z', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call_shared_parent', arguments: JSON.stringify({ cmd: 'cat /Users/tester/.agents/skills/clean-code/SKILL.md' }) } }),
+      JSON.stringify({ timestamp: '2026-10-01T10:00:06.000Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'call_shared_parent', output: 'ok' } }),
+      JSON.stringify({ timestamp: '2026-10-01T10:00:35.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),
+      // Re-opened thread 3 days later before next turn_context -> must NOT inflate Turn 1 duration
+      JSON.stringify({ timestamp: '2026-10-04T10:00:00.000Z', type: 'event_msg', payload: { type: 'thread_settings_applied' } }),
+    ].join('\n');
+
+    const childLines = [
+      JSON.stringify({ timestamp: '2026-10-02T10:00:00.000Z', type: 'session_meta', payload: { id: childId, forked_from_id: parentId, cwd: '/Users/tester/app' } }),
+      // Replayed parent session_meta MUST NOT overwrite childId!
+      JSON.stringify({ timestamp: '2026-10-02T10:00:00.001Z', type: 'session_meta', payload: { id: parentId } }),
+      // Replayed parent items with identical msg/call IDs must be deduplicated across fork
+      JSON.stringify({ timestamp: '2026-10-02T10:00:00.002Z', type: 'response_item', payload: { type: 'message', id: 'msg_parent_1', role: 'user', content: [{ type: 'input_text', text: '<skill>\n<name>superpowers:writing-plans</name>\n<path>/Users/tester/.codex/plugins/cache/superpowers-dev/superpowers/6.3.0/skills/writing-plans/SKILL.md</path>\n</skill>' }] } }),
+      JSON.stringify({ timestamp: '2026-10-02T10:00:00.003Z', type: 'response_item', payload: { type: 'function_call', name: 'exec_command', call_id: 'call_shared_parent', arguments: JSON.stringify({ cmd: 'cat /Users/tester/.agents/skills/clean-code/SKILL.md' }) } }),
+      // Child's own new turn & skill call
+      JSON.stringify({ timestamp: '2026-10-02T10:05:00.000Z', type: 'event_msg', payload: { type: 'task_started' } }),
+      JSON.stringify({ timestamp: '2026-10-02T10:05:05.000Z', type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', call_id: 'call_child_own', input: 'const r = await tools.exec_command({"cmd":"cat /Users/tester/.codex/skills/.system/review-agent/SKILL.md"});' } }),
+      JSON.stringify({ timestamp: '2026-10-02T10:05:25.000Z', type: 'event_msg', payload: { type: 'task_complete' } }),
+    ].join('\n');
+
+    writeFileSync(join(codexSessDir, `rollout-2026-10-01T10-00-00-${parentId}.jsonl`), parentLines + '\n');
+    writeFileSync(join(codexSessDir, `rollout-2026-10-02T10-00-00-${childId}.jsonl`), childLines + '\n');
+
+    const codexRes = backfillCodex({ homeDir });
+    assert.equal(codexRes.events.length, 3);
+    const wp = codexRes.events.find((e) => e.skill === 'writing-plans');
+    assert.ok(wp);
+    assert.equal(wp.session_id, parentId);
+    assert.equal(wp.duration_seconds, 33); // 10:00:35 - 10:00:02, NOT 86400!
+    const cc = codexRes.events.find((e) => e.skill === 'clean-code');
+    assert.equal(cc.session_id, parentId);
+    assert.equal(cc.duration_seconds, 30);
+    const ra = codexRes.events.find((e) => e.skill === 'review-agent');
+    assert.ok(ra);
+    assert.equal(ra.session_id, childId); // NOT overwritten by replayed parent session_meta!
+    assert.equal(ra.duration_seconds, 20);
+
+    // 2. Antigravity manual <SKILL> preservation across read_file + direct script execution
+    const agyLogs = join(homeDir, '.gemini', 'antigravity', 'brain', 'conv-manual-1', '.system_generated', 'logs');
+    mkdirSync(agyLogs, { recursive: true });
+    const agyLines = [
+      JSON.stringify({
+        step_index: 0,
+        type: 'USER_INPUT',
+        status: 'DONE',
+        created_at: '2026-11-19T10:00:00Z',
+        content: '<SKILL>\nPlease read and use the "uniprot-database" skill. The path to the skill file is: /Users/tester/.gemini/config/plugins/science/skills/uniprot_database/SKILL.md\n</SKILL>\nCheck P04637',
+      }),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-19T10:00:05Z',
+        tool_calls: [
+          { name: 'read_file', args: { Path: '/Users/tester/.gemini/config/plugins/science/skills/uniprot_database/SKILL.md' } },
+          { name: 'run_command', args: { CommandLine: 'python3 ~/.agents/skills/memory-recall/scripts/search_memory.py auth' } },
+        ],
+      }),
+    ].join('\n');
+    writeFileSync(join(agyLogs, 'transcript.jsonl'), agyLines + '\n');
+
+    const agyRes = backfillAntigravity({ homeDir });
+    assert.equal(agyRes.events.length, 2);
+    const uniprotEv = agyRes.events.find((e) => e.skill.includes('uniprot'));
+    assert.equal(uniprotEv.via, 'slash_command');
+    const memEv = agyRes.events.find((e) => e.skill === 'memory-recall');
+    assert.equal(memEv.via, 'shell_read');
+
+    // 3. Gemini CLI .jsonl $set.messages checkpoint format
+    const gemChats = join(homeDir, '.gemini', 'tmp', 'proj1', 'chats');
+    mkdirSync(gemChats, { recursive: true });
+    writeFileSync(
+      join(gemChats, 'session-2026-11-19-patch.jsonl'),
+      JSON.stringify({ sessionId: 'gem-patch-1', startTime: '2026-11-19T11:00:00Z' }) +
+        '\n' +
+        JSON.stringify({
+          $set: {
+            lastUpdated: '2026-11-19T11:01:00Z',
+            messages: [
+              {
+                type: 'gemini',
+                timestamp: '2026-11-19T11:00:10Z',
+                toolCalls: [{ id: 'tc_gp_1', name: 'activate_skill', args: { name: 'pdf' }, status: 'success' }],
+              },
+            ],
+          },
+        }) +
+        '\n'
+    );
+    const gemRes = backfillGemini({ homeDir });
+    assert.equal(gemRes.events.length, 1);
+    assert.equal(gemRes.events[0].skill, 'pdf');
+    assert.equal(gemRes.events[0].session_id, 'gem-patch-1');
+
+    // Full runBackfill ensures canonicalization + hook-vs-slash dedupe preserves manual trigger
+    const summary = runBackfill({ homeDir, dataHome, host: 'all' });
+    assert.ok(summary.totalEvents >= 6);
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
