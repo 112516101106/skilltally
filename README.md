@@ -22,8 +22,10 @@ npx skilltally backfill
 # 3. Verify hook registration and run live self-test
 npx skilltally doctor
 
-# 4. Inspect usage and unused context tax
+# 4. Inspect usage, insights, HTML dashboard, and unused context tax
 npx skilltally stats --since 30d
+npx skilltally insights --since 30d
+npx skilltally dashboard --open
 npx skilltally unused --since 90d
 ```
 
@@ -33,10 +35,10 @@ Or ask your coding agent directly: *"Which agent skills do I use the most?"*
 
 | Agent | Real-time hook | History backfill | Plugin / Extension install | Notes |
 |---|---|---|---|---|
-| **Antigravity** | `PostToolUse` (`read_file\|view_file`) | `~/.gemini/antigravity*/brain/` | Native plugin (`plugin.json` + `hooks.json`) | POSIX fast-path skips Node on misses (~7 ms); reads `transcript_full.jsonl` when truncated |
-| **Claude Code** | `PostToolUse` (`Skill\|Read`, `async: true`) | `~/.claude/projects/**/*.jsonl` | `.claude-plugin/plugin.json` | Collapses `Skill` + `Read` calls within 5 s |
-| **Codex** | `PostToolUse` (async) | `~/.codex/{sessions,archived_sessions}/` | `.codex-plugin/plugin.json` | Supports `.jsonl.zst` archives natively on Node `>= 22.15`; approve via `/hooks` |
-| **Gemini CLI** | `AfterTool` (`activate_skill`) | `~/.gemini/tmp/*/chats/*.{json,jsonl}` | `gemini-extension.json` + `install --host gemini` | `timeout: 5000` ms in `~/.gemini/settings.json` |
+| **Antigravity** | `PostToolUse` (`read_file\|view_file\|run_command`) | `~/.gemini/antigravity*/brain/` | Native plugin (`plugin.json` + `hooks.json`) | POSIX fast-path forwards `SKILL.md` & `skills/*/(scripts\|bin)/*` (~7 ms skip on misses); preserves `<SKILL>` manual triggers (`via: "slash_command"`); reads `transcript_full.jsonl` when truncated |
+| **Claude Code** | `PostToolUse` (`Skill\|Read\|View\|Bash`, `async: true`) | `~/.claude/projects/**/*.jsonl` | `.claude-plugin/plugin.json` | 30 s deduplication window, continuation-read filtering, and `Base directory for this skill:` slash-command backfill |
+| **Codex** | `PostToolUse` + `UserPromptSubmit` (`async: true`) | `~/.codex/{sessions,archived_sessions}/` | `.codex-plugin/plugin.json` | Supports `.jsonl.zst` natively on Node `>= 22.15`, `.system`/nested/MCP `skill://`/script detection, forked rollout deduplication, and trust verification via `/hooks` |
+| **Gemini CLI** | `AfterTool` (`activate_skill\|read_file\|view_file\|read_many_files\|run_shell_command`) | `~/.gemini/tmp/*/chats/*.{json,jsonl}` | `gemini-extension.json` + `install --host gemini` | `timeout: 5000` ms in `~/.gemini/settings.json`; supports `.json` and `$set.messages` `.jsonl` checkpoints |
 
 ## Plugin & Skill Installation
 
@@ -53,7 +55,7 @@ If you prefer native plugin managers over `npx skilltally install`:
   codex plugin marketplace add https://github.com/112516101106/skilltally.git
   codex plugin add skilltally@skilltally
   ```
-  Run `codex`, open `/hooks`, and trust the `skilltally` `PostToolUse` hook.
+  Run `codex`, open `/hooks`, and trust the `skilltally` hooks (`PostToolUse` and `UserPromptSubmit`).
 - **Gemini CLI**:
   ```bash
   gemini extensions install https://github.com/112516101106/skilltally
@@ -108,8 +110,8 @@ Tip: disabling an unused plugin removes all of its skill descriptions from every
 | `unused` | Enabled installed skills with 0 activations and Context Tax breakdown | `--since 90d`, `--host`, `--all`, `--json` |
 | `timeline` | ASCII usage bar chart over time | `--skill <name>`, `--by day\|week\|month`, `--since`, `--host`, `--project`, `--json` |
 | `chains` | Skill transition chains (`A -> B`), 3-step workflows, and co-occurring pairs | `--since`, `--host`, `--project`, `-n 20`, `--json` |
-| `insights` | Context ROI, manual-only triggers, single-project scoping candidates, model stats | `--since`, `--host`, `--project`, `--json` |
-| `dashboard` | Generate self-contained offline HTML dashboard (SVG Treemap, chains, Mermaid) | `-o <file>`, `--since`, `--host`, `--project`, `--open`, `--json` |
+| `insights` | Runtime tokens & prompt cache hit rate, task durations (`slowestSkills`), heavy `SKILL.md` bodies (`>= 1,500` tokens), opt-in redacted prompt patterns, Context ROI, manual-only triggers, single-project scoping, and model breakdown | `--since`, `--host`, `--project`, `--json` |
+| `dashboard` | Generate self-contained offline HTML dashboard (5-metric KPI strip with `Lifetime tokens`, `Peak tokens`, `Longest task`, streaks; SVG Treemap; cache hit rate; workflow chains; Mermaid generator) | `-o <file>`, `--since`, `--host`, `--project`, `--open`, `--json` |
 | `prune` | Safely disable 100%-unused plugins or specific unused skills (with backups) | `--since 90d`, `--host all\|antigravity\|codex`, `--plugin <name>`, `--skill <name>`, `--dry-run`, `--json` |
 | `export` | Export deduplicated events as JSON or RFC-4180 CSV | `--format json\|csv`, `-o <file>`, `--since`, `--host`, `--project`, `--include-failed` |
 | `inventory` | List installed skills, sources, hosts, enabled state, and description sizes | `--no-project`, `--json` |
@@ -121,6 +123,7 @@ Tip: disabling an unused plugin removes all of its skill descriptions from every
 - **100% local, zero telemetry**: Zero network requests, zero third-party runtime dependencies.
 - **No raw arguments or prompts stored**: Only the matched `SKILL.md` path (or `Skill`/`activate_skill` name) and `basename(cwd)` are written to `~/.skilltally/` (`0700` dir, `0600` files). Full `cwd` is omitted unless `store_cwd: true` is set, and redacted prompt previews (`80` chars, secrets/emails/paths stripped) are omitted unless `store_prompts: true` is set in `~/.skilltally/config.json`.
 - **Safe by contract**: `track.mjs` never throws, always exits `0`, and always writes `{}` to `stdout` so hooks never interrupt an agent turn.
+- **Accurate telemetry & deduplication**: Filters paginated continuation reads, deduplicates repeated same-session triggers within 30 s while preserving manual triggers (`slash_command`/`mention`), deduplicates per-turn token snapshots, merges overlapping turn duration intervals, and computes provider-aware prompt cache hit rates across Anthropic vs. OpenAI/Gemini token schemas.
 - **Automatic rotation**: When `events.jsonl` exceeds 20 MB, it rotates automatically to `events-YYYY-MM.jsonl` while reports transparently read all archives.
 - **Config backups**: `install` and `uninstall` back up modified host configs to `~/.skilltally/backups/`.
 
@@ -139,7 +142,7 @@ Tip: disabling an unused plugin removes all of its skill descriptions from every
 ## Troubleshooting
 
 - **No events recorded?** Run `npx skilltally doctor` to verify hook paths and run the live pipe self-test.
-- **Codex hooks not firing?** Run `codex` and open `/hooks` to review and trust the `skilltally` `PostToolUse` hook.
+- **Codex hooks not firing?** Run `codex` and open `/hooks` to review and trust the `skilltally` hooks (`PostToolUse` and `UserPromptSubmit`).
 - **Gemini CLI hooks disabled?** Check `"hooksConfig": { "enabled": true }` in `~/.gemini/settings.json`.
 - **Inspecting unknown hook payloads:** Temporarily run `npx skilltally debug on`, trigger a skill once, inspect `~/.skilltally/debug.jsonl`, then run `npx skilltally debug off` (which deletes `debug.jsonl` automatically).
 

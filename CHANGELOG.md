@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-11-20
+
+### Fixed
+- **Detection & Parsing (`bin/track.mjs`, `hooks/agy-fast-track.sh`)**:
+  - Support `.system` (`~/.codex/skills/.system/<skill>/SKILL.md`), 2-level nested skill paths (`skills/gstack/<skill>/SKILL.md`, `skills/ponytail/<skill>/SKILL.md`), single-skill plugin cache layouts (`plugins/cache/.../<plugin>/SKILL.md`), and shell variable prefixes (`$BASE/skills/...`, `${BASE}/skills/...`).
+  - Expand Codex `exec` command extraction to handle JSON-quoted `"cmd":`, single-quoted escapes, backtick template literals, and JS array/`fs.readFileSync` reads, plus `rg`/`grep` section reads (while rejecting `--files`/`-l`/`-r`/`-c`), MCP `skill://<plugin>/<skill>/SKILL.md` resource URIs, and direct `skills/*/(scripts|bin)/*` execution (forwarded by `hooks/agy-fast-track.sh`).
+  - Strip `namespace:` / `namespace::` prefixes in `<skill>` tags and Markdown links; fix `resolveSource` for `<plugin>/<version>/skills/` caches (avoiding `plugin:5.2.0`), `.tmp/marketplaces/`, `skill://` URIs, and relative `.agents/skills/` paths; avoid double-counting `cached_input_tokens`/`cachedContentTokenCount` in `extractUsageMetrics` when `total_tokens` is omitted.
+- **Backfill & Normalization (`src/backfill/*`, `src/core/normalize.mjs`)**:
+  - Lock Codex `session_id` to the first `session_meta` in forked rollouts, deduplicate replayed parent `call_id`/`msg_` items across forks, and stop extending turn end timestamps on `task_complete`/`turn_aborted` so multi-day idle gaps do not inflate durations.
+  - Preserve Antigravity manual `<SKILL>` slash commands (`via: "slash_command"`) per turn in `backfillAntigravity` and via live transcript tail in `bin/track.mjs`, and retain manual `via` (`slash_command`/`mention`) over auto `read`/`shell_read` when deduplicating within 30 s.
+  - Support Gemini CLI `.jsonl` `{"$set": { "messages": [...] }}` checkpoint patch files in `src/backfill/gemini.mjs`.
+  - Canonicalize events before `dedupeEvents` in `runBackfill`.
+- **Inventory, Aggregation, Dashboard & Installer (`src/inventory/scan.mjs`, `src/report/*`, `src/install/antigravity.mjs`)**:
+  - Discover `.system` and 2-level nested skills in `scanInventory`, compare Codex cache versions numerically (`compareSemverLike`), skip `plugin-install-*` staging directories, deduplicate multi-marketplace Codex plugin caches against `~/.codex/config.toml` states (preserving `byPath` aliases), and expose `bySkillAndSource`.
+  - Deduplicate same-turn token snapshots in `aggregateStats`, fix the `cacheHitRate` denominator for OpenAI/Gemini inclusive `input_tokens`, merge overlapping per-session turn duration intervals with task-scoped `longestTaskSeconds`, and disambiguate `inventory.used` across duplicate `(name, source)` installs using canonical `skill_path`.
+  - Rename the dashboard overview ledger row from `Total skills used` to `Total skill reads`.
+  - Guard `installAntigravity` against `cpSync` errors when `install` is invoked directly from an already-installed non-symlink plugin directory.
+
 ## [1.2.0] - 2026-11-20
 
 ### Added
