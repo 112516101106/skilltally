@@ -285,15 +285,17 @@ export function scanInventory({ homeDir = homedir(), cwd = process.cwd(), includ
     }
 
     const descChars = fm.description.length;
+    const bytes = Buffer.byteLength(md, 'utf8');
     byCanonPath.set(canon, {
       name: fm.name || dirName,
       dir_name: dirName,
       path: canon,
       source: source || resolveSource(canon, cwd, homeDir),
       hosts: [host],
-      bytes: Buffer.byteLength(md, 'utf8'),
+      bytes,
       desc_chars: descChars,
       est_tokens: descChars > 0 ? Math.ceil(descChars / 4) : 0,
+      body_tokens: bytes > 0 ? Math.ceil(bytes / 4) : 0,
       enabled,
     });
   };

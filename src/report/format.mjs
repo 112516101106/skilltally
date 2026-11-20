@@ -1,3 +1,5 @@
+import { formatDurationCompact } from './aggregate.mjs';
+
 function padRight(str, len) {
   const s = String(str);
   return s.length >= len ? s : s + ' '.repeat(len - s.length);
@@ -444,6 +446,57 @@ export function formatInsights(report) {
     const mw = Math.max(12, ...modelEntries.map(([m]) => m.length));
     for (const [model, count] of modelEntries) {
       lines.push(`  ${padRight(model, mw)}  ${padLeft(count, 5)} read(s)`);
+    }
+  }
+
+  // 5. Token Telemetry, Cache Efficiency & Heavy SKILL.md Bodies
+  const tok = report.totals?.tokens || {};
+  const heavy = report.insights?.heavyBodySkills || [];
+  if (tok.total > 0 || tok.activeBodyTokens > 0 || heavy.length > 0) {
+    lines.push('');
+    lines.push('5. Token Telemetry & Heavy SKILL.md Bodies');
+    if (tok.total > 0) {
+      const cachePct = Math.round((tok.cacheHitRate || 0) * 100);
+      lines.push(
+        `  recorded tokens: ${tok.total.toLocaleString()} (in: ${tok.input.toLocaleString()}, out: ${tok.output.toLocaleString()}, cache_read: ${tok.cacheRead.toLocaleString()}, cache hit: ${cachePct}%)`
+      );
+    }
+    if (tok.activeBodyTokens > 0) {
+      lines.push(`  active skill body load: ~${tok.activeBodyTokens.toLocaleString()} tok across activations`);
+    }
+    if (heavy.length > 0) {
+      lines.push('  Heavy SKILL.md bodies (>=1,500 tok — consider splitting into references/):');
+      for (const h of heavy.slice(0, 6)) {
+        lines.push(
+          `    ${h.skill} (${h.source}) — ~${h.body_tokens.toLocaleString()} tok/read (${h.activations} act)`
+        );
+      }
+    }
+  }
+
+  // 6. Skill Execution Duration
+  const dur = report.totals?.duration || {};
+  const slowest = report.insights?.slowestSkills || [];
+  if (dur.totalSeconds > 0 || dur.longestTaskSeconds > 0 || slowest.length > 0) {
+    lines.push('');
+    lines.push('6. Skill Execution Duration');
+    lines.push(
+      `  total time automated: ${formatDurationCompact(dur.totalSeconds)} · longest task: ${formatDurationCompact(dur.longestTaskSeconds)}`
+    );
+    for (const s of slowest.slice(0, 6)) {
+      lines.push(
+        `    ${s.skill} — total ${formatDurationCompact(s.total_duration_seconds)} (avg ${formatDurationCompact(s.avg_duration_seconds)}, ${s.activations} act)`
+      );
+    }
+  }
+
+  // 7. Common Prompt Triggers (when store_prompts is enabled)
+  const prompts = report.insights?.promptPatterns || [];
+  if (prompts.length > 0) {
+    lines.push('');
+    lines.push('7. Common Prompt Triggers');
+    for (const p of prompts.slice(0, 8)) {
+      lines.push(`  ${p.count}x  "${p.prompt}" -> ${p.skills.join(', ')}`);
     }
   }
 

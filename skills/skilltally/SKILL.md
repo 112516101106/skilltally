@@ -39,7 +39,7 @@ Prefer the fastest available invocation:
    skilltally insights --since 30d
    skilltally chains --since 30d
    ```
-   - `insights` surfaces Context ROI (`~tok/activation`), manual-only skills (`0%` auto-match — sharpen `SKILL.md` descriptions), single-project global skills (move to `.agents/skills` or `.claude/skills`), and per-model breakdown.
+   - `insights` surfaces Context ROI (`~tok/activation`), runtime token & prompt cache hit rate, task duration (`Longest task`), heavy `SKILL.md` body alerts (`>=1,500` tokens), manual-only skills (`0%` auto-match — sharpen `SKILL.md` descriptions), single-project global skills (move to `.agents/skills` or `.claude/skills`), prompt trigger patterns (when `store_prompts: true`), and per-model breakdown.
    - `chains` reveals `A -> B` transitions, 3-step workflows, and co-occurring skill pairs within sessions.
 5. **Interactive HTML Dashboard & visualizations**:
    ```bash

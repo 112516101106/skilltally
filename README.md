@@ -119,7 +119,7 @@ Tip: disabling an unused plugin removes all of its skill descriptions from every
 ## Privacy, Performance & Reliability
 
 - **100% local, zero telemetry**: Zero network requests, zero third-party runtime dependencies.
-- **No raw arguments stored**: Only the matched `SKILL.md` path (or `Skill`/`activate_skill` name) and `basename(cwd)` are written to `~/.skilltally/` (`0700` dir, `0600` files). Full `cwd` is omitted unless `store_cwd: true` is set in `~/.skilltally/config.json`.
+- **No raw arguments or prompts stored**: Only the matched `SKILL.md` path (or `Skill`/`activate_skill` name) and `basename(cwd)` are written to `~/.skilltally/` (`0700` dir, `0600` files). Full `cwd` is omitted unless `store_cwd: true` is set, and redacted prompt previews (`80` chars, secrets/emails/paths stripped) are omitted unless `store_prompts: true` is set in `~/.skilltally/config.json`.
 - **Safe by contract**: `track.mjs` never throws, always exits `0`, and always writes `{}` to `stdout` so hooks never interrupt an agent turn.
 - **Automatic rotation**: When `events.jsonl` exceeds 20 MB, it rotates automatically to `events-YYYY-MM.jsonl` while reports transparently read all archives.
 - **Config backups**: `install` and `uninstall` back up modified host configs to `~/.skilltally/backups/`.
@@ -131,7 +131,8 @@ Tip: disabling an unused plugin removes all of its skill descriptions from every
   "exclude_skills": ["skilltally"],
   "exclude_sources": [],
   "aliases": { "native_swarm": "swarm" },
-  "store_cwd": false
+  "store_cwd": false,
+  "store_prompts": false
 }
 ```
 

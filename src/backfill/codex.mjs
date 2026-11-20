@@ -3,7 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import zlib from 'node:zlib';
-import { detectSkillCalls } from '../core/detect.mjs';
+import { detectSkillCalls, extractUsageMetrics, sanitizePromptPreview } from '../core/detect.mjs';
 
 function walkSessionFiles(dir, out = []) {
   if (!existsSync(dir)) return out;
@@ -64,7 +64,7 @@ function sessionIdFromFilename(filePath) {
   return m ? m[1] : basename(filePath);
 }
 
-export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
+export function backfillCodex({ homeDir = homedir(), since = null, storePrompts = false } = {}) {
   const files = [
     ...walkSessionFiles(join(homeDir, '.codex', 'sessions')),
     ...walkSessionFiles(join(homeDir, '.codex', 'archived_sessions')),
@@ -95,7 +95,18 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
     const pendingCalls = [];
     const failedCalls = new Set();
     let turnIdx = 0;
+    let turnPrompt = '';
     const turnPromptSkills = new Set();
+    const turnEndMsMap = new Map();
+    const turnUsageMap = new Map();
+
+    const recordTurnTs = (id, tsStr) => {
+      if (!tsStr) return;
+      const ms = Date.parse(tsStr);
+      if (!Number.isFinite(ms)) return;
+      const prev = turnEndMsMap.get(id);
+      if (prev === undefined || ms > prev) turnEndMsMap.set(id, ms);
+    };
 
     for (const line of raw.split('\n')) {
       if (!line) continue;
@@ -119,13 +130,36 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
         if (obj.payload.model) model = obj.payload.model;
         turnPromptSkills.clear();
         turnIdx += 1;
+        turnPrompt = '';
+        recordTurnTs(turnIdx, obj.timestamp);
+        continue;
+      }
+
+      recordTurnTs(turnIdx, obj.timestamp);
+
+      if (obj.type === 'event_msg' && obj.payload?.type === 'token_count') {
+        const u = extractUsageMetrics(obj.payload?.info?.last_token_usage ?? obj.payload?.usage);
+        if (u) turnUsageMap.set(turnIdx, u);
         continue;
       }
 
       if (obj.type !== 'response_item' || !obj.payload) continue;
       const p = obj.payload;
 
+      const itemUsage = extractUsageMetrics(obj.usage ?? p.usage);
+      if (itemUsage) turnUsageMap.set(turnIdx, itemUsage);
+
       if (p.type === 'message' && p.role === 'user' && Array.isArray(p.content)) {
+        const userTextParts = [];
+        for (const part of p.content) {
+          if (typeof part?.text === 'string' && part.text.trim()) {
+            userTextParts.push(part.text);
+          }
+        }
+        if (userTextParts.length > 0) {
+          turnPrompt = userTextParts.join(' ');
+        }
+
         for (const part of p.content) {
           const text = part?.text;
           if (
@@ -153,10 +187,12 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
             pendingCalls.push({
               idx: pendingCalls.length,
               ts: obj.timestamp,
+              turnId: turnIdx,
               tool: 'UserPromptSubmit',
               callId: p.id || `prompt_${turnIdx}_${pendingCalls.length}`,
               args: {},
               precomputedHits: uniqueTurnHits,
+              promptText: turnPrompt,
               cwd,
               model,
             });
@@ -198,9 +234,12 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
       pendingCalls.push({
         idx: pendingCalls.length,
         ts: obj.timestamp,
+        turnId: turnIdx,
         tool: p.name,
         callId: p.call_id,
         args: argsObj,
+        usage: itemUsage,
+        promptText: turnPrompt,
         cwd,
         model,
       });
@@ -223,6 +262,18 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
         });
 
       const ok = call.callId ? !failedCalls.has(call.callId) : true;
+      const callTsMs = call.ts ? Date.parse(call.ts) : NaN;
+      const turnEndMs = turnEndMsMap.get(call.turnId);
+      const durationSeconds =
+        Number.isFinite(callTsMs) &&
+        Number.isFinite(turnEndMs) &&
+        turnEndMs >= callTsMs &&
+        turnEndMs - callTsMs <= 86400_000
+          ? Math.round((turnEndMs - callTsMs) / 1000)
+          : 0;
+      const usage = call.usage || turnUsageMap.get(call.turnId) || null;
+      const promptPreview = storePrompts && call.promptText ? sanitizePromptPreview(call.promptText) : '';
+
       hits.forEach((h, hitIdx) => {
         events.push({
           v: 1,
@@ -237,6 +288,9 @@ export function backfillCodex({ homeDir = homedir(), since = null } = {}) {
           session_id: sessionId,
           ...(call.cwd ? { project: basename(call.cwd) } : {}),
           ...(call.model ? { model: call.model } : {}),
+          ...(durationSeconds > 0 ? { duration_seconds: durationSeconds } : {}),
+          ...(usage ? usage : {}),
+          ...(promptPreview ? { prompt_preview: promptPreview } : {}),
           origin: 'backfill',
           ok,
         });

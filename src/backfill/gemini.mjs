@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { detectSkillCalls } from '../core/detect.mjs';
+import { detectSkillCalls, extractUsageMetrics, sanitizePromptPreview } from '../core/detect.mjs';
 
 const TARGET_TOOLS = new Set([
   'activate_skill',
@@ -83,7 +83,20 @@ function parseChatFile(filePath, raw) {
   };
 }
 
-export function backfillGemini({ homeDir = homedir(), since = null } = {}) {
+function extractGeminiUserText(msg) {
+  if (!msg || typeof msg !== 'object') return '';
+  if (typeof msg.content === 'string') return msg.content;
+  if (typeof msg.text === 'string') return msg.text;
+  if (Array.isArray(msg.content)) {
+    return msg.content.map((p) => (typeof p?.text === 'string' ? p.text : '')).join(' ');
+  }
+  if (Array.isArray(msg.parts)) {
+    return msg.parts.map((p) => (typeof p?.text === 'string' ? p.text : '')).join(' ');
+  }
+  return '';
+}
+
+export function backfillGemini({ homeDir = homedir(), since = null, storePrompts = false } = {}) {
   const files = findGeminiChatFiles(homeDir);
   const sinceMs = since instanceof Date ? since.getTime() : since ? Date.parse(since) : null;
   const events = [];
@@ -99,9 +112,31 @@ export function backfillGemini({ homeDir = homedir(), since = null } = {}) {
 
     const { sessionId, startTime, cwd: fileCwd, messages } = parseChatFile(file, raw);
     let callIdx = 0;
+    let turnId = 0;
+    let lastUserPrompt = '';
+    const turnEndMsMap = new Map();
+    const turnUsageMap = new Map();
+    const pendingEvents = [];
+
+    const recordTurnTs = (id, tsStr) => {
+      if (!tsStr) return;
+      const ms = Date.parse(tsStr);
+      if (!Number.isFinite(ms)) return;
+      const prev = turnEndMsMap.get(id);
+      if (prev === undefined || ms > prev) turnEndMsMap.set(id, ms);
+    };
 
     for (const msg of messages) {
       if (!msg || typeof msg !== 'object') continue;
+      if (msg.type === 'user' || msg.role === 'user') {
+        turnId += 1;
+        lastUserPrompt = extractGeminiUserText(msg);
+      }
+      recordTurnTs(turnId, msg.timestamp || startTime);
+
+      const msgUsage = extractUsageMetrics(msg.tokens ?? msg.usageMetadata ?? msg.usage);
+      if (msgUsage) turnUsageMap.set(turnId, msgUsage);
+
       const toolCalls = Array.isArray(msg.toolCalls)
         ? msg.toolCalls
         : Array.isArray(msg.tool_calls)
@@ -114,6 +149,7 @@ export function backfillGemini({ homeDir = homedir(), since = null } = {}) {
         if (!tc || !TARGET_TOOLS.has(tc.name)) continue;
         const idx = callIdx++;
         const ts = tc.timestamp || msg.timestamp || startTime;
+        recordTurnTs(turnId, ts);
         if (sinceMs !== null && ts) {
           const tsMs = Date.parse(ts);
           if (Number.isFinite(tsMs) && tsMs < sinceMs) continue;
@@ -130,7 +166,7 @@ export function backfillGemini({ homeDir = homedir(), since = null } = {}) {
 
         const ok = tc.status !== 'error' && tc.status !== 'cancelled';
         hits.forEach((h, hitIdx) => {
-          events.push({
+          pendingEvents.push({
             v: 1,
             id: `gemini:${sessionId}:${tc.id || idx}#${hitIdx}`,
             ts: ts || new Date(0).toISOString(),
@@ -143,11 +179,38 @@ export function backfillGemini({ homeDir = homedir(), since = null } = {}) {
             session_id: sessionId,
             ...(msgCwd ? { project: basename(msgCwd) } : {}),
             ...(msg.model ? { model: msg.model } : {}),
+            _turnId: turnId,
+            _usage: msgUsage,
+            _promptText: lastUserPrompt,
             origin: 'backfill',
             ok,
           });
         });
       }
+    }
+
+    for (const ev of pendingEvents) {
+      const tid = ev._turnId;
+      const usage = ev._usage || turnUsageMap.get(tid) || null;
+      const pText = ev._promptText;
+      delete ev._turnId;
+      delete ev._usage;
+      delete ev._promptText;
+
+      const tsMs = ev.ts ? Date.parse(ev.ts) : NaN;
+      const endMs = turnEndMsMap.get(tid);
+      const durationSeconds =
+        Number.isFinite(tsMs) &&
+        Number.isFinite(endMs) &&
+        endMs >= tsMs &&
+        endMs - tsMs <= 86400_000
+          ? Math.round((endMs - tsMs) / 1000)
+          : 0;
+      if (durationSeconds > 0) ev.duration_seconds = durationSeconds;
+      if (usage) Object.assign(ev, usage);
+      const preview = storePrompts && pText ? sanitizePromptPreview(pText) : '';
+      if (preview) ev.prompt_preview = preview;
+      events.push(ev);
     }
   }
 

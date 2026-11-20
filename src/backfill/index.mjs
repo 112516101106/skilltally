@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { getHomeDir } from '../core/config.mjs';
+import { getHomeDir, loadConfig } from '../core/config.mjs';
 import { dedupeEvents } from '../core/normalize.mjs';
 import { writeBackfillEvents } from '../core/store.mjs';
 import { backfillAntigravity } from './antigravity.mjs';
@@ -16,6 +16,8 @@ export function runBackfill({
 } = {}) {
   const hostsSummary = {};
   const collected = [];
+  const config = loadConfig(dataHome);
+  const storePrompts = Boolean(config.store_prompts);
 
   const wantAgy = host === 'all' || String(host).startsWith('antigravity');
   const wantCodex = host === 'all' || host === 'codex';
@@ -23,7 +25,7 @@ export function runBackfill({
   const wantGemini = host === 'all' || host === 'gemini';
 
   if (wantAgy) {
-    const res = backfillAntigravity({ homeDir, since });
+    const res = backfillAntigravity({ homeDir, since, storePrompts });
     const filtered =
       host === 'all' || host === 'antigravity'
         ? res.events
@@ -37,7 +39,7 @@ export function runBackfill({
   }
 
   if (wantCodex) {
-    const res = backfillCodex({ homeDir, since });
+    const res = backfillCodex({ homeDir, since, storePrompts });
     collected.push(...res.events);
     hostsSummary.codex = {
       files: res.files,
@@ -48,7 +50,7 @@ export function runBackfill({
   }
 
   if (wantClaude) {
-    const res = backfillClaude({ homeDir, since });
+    const res = backfillClaude({ homeDir, since, storePrompts });
     collected.push(...res.events);
     hostsSummary.claude = {
       files: res.files,
@@ -58,7 +60,7 @@ export function runBackfill({
   }
 
   if (wantGemini) {
-    const res = backfillGemini({ homeDir, since });
+    const res = backfillGemini({ homeDir, since, storePrompts });
     collected.push(...res.events);
     hostsSummary.gemini = {
       files: res.files,

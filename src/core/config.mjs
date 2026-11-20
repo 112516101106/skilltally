@@ -7,6 +7,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   exclude_sources: [],
   aliases: {},
   store_cwd: false,
+  store_prompts: false,
 });
 
 export function getHomeDir(env = process.env) {
@@ -26,6 +27,7 @@ export function loadConfig(homeDir = getHomeDir()) {
           ? { ...parsed.aliases }
           : {},
       store_cwd: parsed.store_cwd === true,
+      store_prompts: parsed.store_prompts === true,
     };
   } catch {
     return { ...DEFAULT_CONFIG };

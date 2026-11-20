@@ -3,9 +3,12 @@
 // Contract when executed directly: NEVER throw, ALWAYS exit 0, ALWAYS print "{}".
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   statSync,
@@ -130,8 +133,59 @@ export function resolveHost(hostFlag, payload, env = process.env) {
   return 'unknown';
 }
 
+export function sanitizePromptPreview(rawPrompt, maxLen = 80) {
+  if (typeof rawPrompt !== 'string' || !rawPrompt.trim()) return '';
+  let text = rawPrompt
+    .replace(/<SKILL>[\s\S]*?<\/SKILL>/gi, ' ')
+    .replace(/<skill>[\s\S]*?<\/skill>/gi, ' ')
+    .replace(/\[[\$@\/]?[A-Za-z0-9._-]+\]\([^()\s]*SKILL\.md\)/gi, ' ')
+    .replace(/Base directory for this skill:[^\r\n]*/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\b(?:sk|pk|rk|ghp|gho|github_pat|xox[baprs]|AIza)[A-Za-z0-9_-]{10,}\b/g, '[REDACTED]')
+    .replace(/\b[A-Za-z0-9_-]{36,}\b/g, '[REDACTED]')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[EMAIL]')
+    .replace(/(?:\/Users\/|\/home\/|[A-Za-z]:\\)[^\s"'`)]+/g, '[PATH]')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return '';
+  return text.length > maxLen ? text.slice(0, maxLen) : text;
+}
+
+export function extractUsageMetrics(usage) {
+  if (!usage || typeof usage !== 'object') return null;
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+  const input = num(usage.input_tokens ?? usage.promptTokenCount) ?? 0;
+  const output = num(usage.output_tokens ?? usage.candidatesTokenCount) ?? 0;
+  const cacheRead =
+    num(
+      usage.cache_read_tokens ??
+        usage.cache_read_input_tokens ??
+        usage.cached_input_tokens ??
+        usage.cachedContentTokenCount
+    ) ?? 0;
+  const cacheCreate = num(usage.cache_creation_tokens ?? usage.cache_creation_input_tokens) ?? 0;
+  const rawTotal = num(usage.total_tokens ?? usage.totalTokenCount);
+  const computedTotal = input + output + cacheRead + cacheCreate;
+  const total = rawTotal !== null && rawTotal > 0 ? rawTotal : computedTotal;
+  if (total <= 0) return null;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_tokens: cacheRead,
+    cache_creation_tokens: cacheCreate,
+    total_tokens: total,
+  };
+}
+
 export function normalizeHookPayload(host, payload) {
   const p = payload && typeof payload === 'object' ? payload : {};
+  const transcriptPath = p.transcript_path ?? p.transcriptPath;
+  const payloadUsage = extractUsageMetrics(
+    p.usage ?? p.message?.usage ?? p.tool_response?.usage ?? p.usageMetadata
+  );
+  const rawDur = Number(p.duration_seconds);
+  const durationSeconds = Number.isFinite(rawDur) && rawDur >= 0 ? Math.round(rawDur) : undefined;
+
   if (String(host).startsWith('antigravity') || p.toolCall) {
     const cwd = p.cwd ?? (Array.isArray(p.workspacePaths) ? p.workspacePaths[0] : undefined);
     return {
@@ -142,6 +196,9 @@ export function normalizeHookPayload(host, payload) {
       cwd,
       model: p.modelName,
       failed: Boolean(p.error),
+      transcriptPath,
+      ...(payloadUsage ? { usage: payloadUsage } : {}),
+      ...(durationSeconds !== undefined ? { durationSeconds } : {}),
     };
   }
   const resp = p.tool_response;
@@ -169,6 +226,9 @@ export function normalizeHookPayload(host, payload) {
     cwd: p.cwd,
     model: p.model,
     failed,
+    transcriptPath,
+    ...(payloadUsage ? { usage: payloadUsage } : {}),
+    ...(durationSeconds !== undefined ? { durationSeconds } : {}),
   };
 }
 
@@ -353,12 +413,106 @@ export function detectSkillCalls({
   return hits;
 }
 
-function readStoreCwdFlag(home) {
+function readConfigFlags(home) {
   try {
     const cfg = JSON.parse(readFileSync(join(home, 'config.json'), 'utf8'));
-    return cfg?.store_cwd === true;
+    return {
+      storeCwd: cfg?.store_cwd === true,
+      storePrompts: cfg?.store_prompts === true,
+    };
   } catch {
-    return false;
+    return { storeCwd: false, storePrompts: false };
+  }
+}
+
+function extractUserTextFromRecord(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.type === 'USER_INPUT' && typeof obj.content === 'string') {
+    return obj.content;
+  }
+  if (obj.type === 'user' || obj.role === 'user') {
+    const content = obj.message?.content ?? obj.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const parts = content
+        .filter((b) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b) => b.text);
+      if (parts.length > 0) return parts.join(' ');
+    }
+  }
+  if (obj.type === 'response_item' && obj.payload?.type === 'message' && obj.payload?.role === 'user') {
+    const content = obj.payload.content;
+    if (Array.isArray(content)) {
+      const parts = content.filter((b) => typeof b?.text === 'string').map((b) => b.text);
+      if (parts.length > 0) return parts.join(' ');
+    }
+  }
+  return null;
+}
+
+function readTranscriptTailContext(transcriptPath, nowMs) {
+  if (!transcriptPath || typeof transcriptPath !== 'string') return {};
+  try {
+    if (!existsSync(transcriptPath)) return {};
+    const size = statSync(transcriptPath).size;
+    if (size <= 0) return {};
+    const maxRead = 24 * 1024;
+    const offset = Math.max(0, size - maxRead);
+    const len = size - offset;
+    const buf = Buffer.allocUnsafe(len);
+    const fd = openSync(transcriptPath, 'r');
+    try {
+      readSync(fd, buf, 0, len, offset);
+    } finally {
+      closeSync(fd);
+    }
+    let text = buf.toString('utf8');
+    if (offset > 0) {
+      const nl = text.indexOf('\n');
+      if (nl !== -1) text = text.slice(nl + 1);
+    }
+    const lines = text.split('\n');
+    let usage = null;
+    let promptText = null;
+    let durationSeconds;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      let obj;
+      try {
+        obj = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!usage) {
+        usage = extractUsageMetrics(
+          obj.message?.usage ??
+            obj.usage ??
+            obj.usageMetadata ??
+            obj.payload?.usage ??
+            obj.payload?.info?.last_token_usage
+        );
+      }
+      if (promptText === null) {
+        const uText = extractUserTextFromRecord(obj);
+        if (uText !== null) {
+          promptText = uText;
+          const tsVal = obj.timestamp ?? obj.created_at;
+          if (tsVal && Number.isFinite(nowMs)) {
+            const startMs = Date.parse(tsVal);
+            if (Number.isFinite(startMs) && nowMs >= startMs && nowMs - startMs <= 86400_000) {
+              durationSeconds = Math.round((nowMs - startMs) / 1000);
+            }
+          }
+        }
+      }
+      if (usage && promptText !== null) break;
+    }
+
+    return { usage, promptText, durationSeconds };
+  } catch {
+    return {};
   }
 }
 
@@ -441,7 +595,14 @@ export function main() {
   if (uniqueHits.length === 0) return;
 
   mkdirSync(home, { recursive: true, mode: 0o700 });
-  const storeCwd = readStoreCwdFlag(home);
+  const { storeCwd, storePrompts } = readConfigFlags(home);
+
+  const needsTail = !n.usage || n.durationSeconds === undefined || (storePrompts && !n.prompt);
+  const tailCtx = needsTail && n.transcriptPath ? readTranscriptTailContext(n.transcriptPath, nowMs) : {};
+  const usage = n.usage ?? tailCtx.usage ?? null;
+  const durationSeconds = n.durationSeconds ?? tailCtx.durationSeconds;
+  const rawPromptText = n.prompt ?? tailCtx.promptText;
+  const promptPreview = storePrompts && rawPromptText ? sanitizePromptPreview(rawPromptText) : '';
 
   const lines = uniqueHits.map((h, idx) =>
     JSON.stringify({
@@ -459,6 +620,9 @@ export function main() {
       ...(n.cwd ? { project: basename(n.cwd) } : {}),
       ...(storeCwd && n.cwd ? { cwd: n.cwd } : {}),
       ...(n.model ? { model: n.model } : {}),
+      ...(durationSeconds !== undefined ? { duration_seconds: durationSeconds } : {}),
+      ...(usage ? usage : {}),
+      ...(promptPreview ? { prompt_preview: promptPreview } : {}),
       origin: 'hook',
       ok: !n.failed,
     })

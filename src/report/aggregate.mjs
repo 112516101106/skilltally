@@ -35,6 +35,21 @@ export function parseSince(sinceStr, now = new Date()) {
   throw new Error(`Invalid --since value: "${sinceStr}" (use e.g. 7d, 30d, 90d, 4w, 6m, 2026-01-01, or all)`);
 }
 
+export function formatDurationCompact(seconds) {
+  const sec = Number(seconds);
+  if (!Number.isFinite(sec) || sec <= 0) return '0s';
+  const rounded = Math.round(sec);
+  if (rounded < 60) return `${rounded}s`;
+  if (rounded < 3600) {
+    const m = Math.floor(rounded / 60);
+    const s = rounded % 60;
+    return s > 0 ? `${m}m ${s}s` : `${m}m`;
+  }
+  const h = Math.floor(rounded / 3600);
+  const m = Math.floor((rounded % 3600) / 60);
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+}
+
 export function hostMatches(eventHost, filterHost) {
   if (!filterHost || filterHost === 'all') return true;
   if (eventHost === filterHost) return true;
@@ -149,8 +164,20 @@ export function aggregateStats({
   const modelTotals = {};
   const projectTotals = {};
   const allSessions = new Set();
+  const sessionBounds = new Map();
+  const sessionExplicitDur = new Map();
+  const sessionTokensMap = new Map();
+  const sessionBodyFallbackMap = new Map();
+  const promptMap = new Map();
+
   let manualTotal = 0;
   let autoTotal = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCacheReadTokens = 0;
+  let totalCacheCreationTokens = 0;
+  let totalRecordedTokens = 0;
+  let maxSingleDuration = 0;
   const groups = new Map();
 
   for (let idx = 0; idx < filtered.length; idx++) {
@@ -192,6 +219,8 @@ export function aggregateStats({
         projects: new Set(),
         models: new Set(),
         daySessions: new Map(),
+        durations: [],
+        tokens: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0 },
         last_used: ev.ts || '',
       };
       groups.set(key, bucket);
@@ -213,9 +242,54 @@ export function aggregateStats({
     if (ev.project) bucket.projects.add(ev.project);
     if (ev.model) bucket.models.add(ev.model);
 
+    if (typeof ev.duration_seconds === 'number' && Number.isFinite(ev.duration_seconds) && ev.duration_seconds > 0) {
+      const dur = Math.min(86400, Math.round(ev.duration_seconds));
+      bucket.durations.push(dur);
+      sessionExplicitDur.set(globalSessKey, (sessionExplicitDur.get(globalSessKey) || 0) + dur);
+      if (dur > maxSingleDuration) maxSingleDuration = dur;
+    }
+
+    const inTok = typeof ev.input_tokens === 'number' && Number.isFinite(ev.input_tokens) ? ev.input_tokens : 0;
+    const outTok = typeof ev.output_tokens === 'number' && Number.isFinite(ev.output_tokens) ? ev.output_tokens : 0;
+    const crTok = typeof ev.cache_read_tokens === 'number' && Number.isFinite(ev.cache_read_tokens) ? ev.cache_read_tokens : 0;
+    const ccTok = typeof ev.cache_creation_tokens === 'number' && Number.isFinite(ev.cache_creation_tokens) ? ev.cache_creation_tokens : 0;
+    const totTok = typeof ev.total_tokens === 'number' && Number.isFinite(ev.total_tokens) ? ev.total_tokens : 0;
+    if (totTok > 0 || inTok > 0 || outTok > 0) {
+      const effectiveTotal = totTok > 0 ? totTok : inTok + outTok + crTok + ccTok;
+      bucket.tokens.input += inTok;
+      bucket.tokens.output += outTok;
+      bucket.tokens.cacheRead += crTok;
+      bucket.tokens.cacheCreation += ccTok;
+      bucket.tokens.total += effectiveTotal;
+      totalInputTokens += inTok;
+      totalOutputTokens += outTok;
+      totalCacheReadTokens += crTok;
+      totalCacheCreationTokens += ccTok;
+      totalRecordedTokens += effectiveTotal;
+      sessionTokensMap.set(globalSessKey, (sessionTokensMap.get(globalSessKey) || 0) + effectiveTotal);
+    }
+
+    if (typeof ev.prompt_preview === 'string' && ev.prompt_preview.trim()) {
+      const pKey = ev.prompt_preview.trim();
+      let pEntry = promptMap.get(pKey);
+      if (!pEntry) {
+        pEntry = { prompt: pKey, count: 0, skills: new Set() };
+        promptMap.set(pKey, pEntry);
+      }
+      pEntry.count += 1;
+      pEntry.skills.add(ev.skill);
+    }
+
     if (ev.ts) {
       const tsMs = Date.parse(ev.ts);
       if (Number.isFinite(tsMs)) {
+        const bounds = sessionBounds.get(globalSessKey);
+        if (!bounds) {
+          sessionBounds.set(globalSessKey, { min: tsMs, max: tsMs });
+        } else {
+          if (tsMs < bounds.min) bounds.min = tsMs;
+          if (tsMs > bounds.max) bounds.max = tsMs;
+        }
         const dayKey = new Date(tsMs).toISOString().slice(0, 10);
         let daySet = bucket.daySessions.get(dayKey);
         if (!daySet) {
@@ -236,8 +310,15 @@ export function aggregateStats({
     const invEntry = findInventoryEntry(inventory, b.skill, b.source, bySource);
     const estTokens = invEntry?.est_tokens || 0;
     const descChars = invEntry?.desc_chars || 0;
+    const bodyTokens =
+      invEntry?.body_tokens || (invEntry?.bytes ? Math.ceil(invEntry.bytes / 4) : 0);
     const activations = b.sessions.size;
+    const activeLoadTokens = activations * bodyTokens;
     const dailyCounts = buildDailySparklineSeries(b.daySessions, now, 14);
+    const totalDur = b.durations.reduce((acc, d) => acc + d, 0);
+    const avgDur = b.durations.length > 0 ? Math.round(totalDur / b.durations.length) : 0;
+    const maxDur = b.durations.length > 0 ? Math.max(...b.durations) : 0;
+
     return {
       skill: b.skill,
       source: b.source,
@@ -254,11 +335,25 @@ export function aggregateStats({
       models: [...b.models].sort(),
       est_tokens: estTokens,
       desc_chars: descChars,
+      body_tokens: bodyTokens,
+      activeLoadTokens,
       tokenCostPerActivation: estTokens > 0 ? Math.round((totalSessions * estTokens) / Math.max(1, activations)) : 0,
+      tokens: b.tokens,
+      total_duration_seconds: totalDur,
+      avg_duration_seconds: avgDur,
+      max_duration_seconds: maxDur,
       dailyCounts,
       sparkline: encodeSparkline(dailyCounts),
     };
   });
+
+  // Track fallback session body tokens for sessions lacking transcript usage
+  for (const r of rows) {
+    if (r.body_tokens > 0) {
+      const k = r.skill;
+      sessionBodyFallbackMap.set(k, r.body_tokens);
+    }
+  }
 
   rows.sort((a, b) => {
     if (metric === 'reads') {
@@ -364,6 +459,103 @@ export function aggregateStats({
       tokenCostPerActivation: r.tokenCostPerActivation,
     }));
 
+  // Heavy SKILL.md bodies (>= 1500 body tokens)
+  const heavySeen = new Set();
+  const heavyCandidates = [];
+  for (const r of rows) {
+    if (r.body_tokens >= 1500) {
+      heavySeen.add(`${r.skill}\0${r.source}`);
+      heavyCandidates.push({
+        skill: r.skill,
+        source: r.source,
+        activations: r.activations,
+        est_tokens: r.est_tokens,
+        body_tokens: r.body_tokens,
+        activeLoadTokens: r.activeLoadTokens,
+      });
+    }
+  }
+  for (const s of enabledSkills) {
+    const bt = s.body_tokens || (s.bytes ? Math.ceil(s.bytes / 4) : 0);
+    if (bt >= 1500 && !heavySeen.has(`${s.name}\0${s.source}`)) {
+      heavySeen.add(`${s.name}\0${s.source}`);
+      heavyCandidates.push({
+        skill: s.name,
+        source: s.source,
+        activations: 0,
+        est_tokens: s.est_tokens || 0,
+        body_tokens: bt,
+        activeLoadTokens: 0,
+      });
+    }
+  }
+  const heavyBodySkills = heavyCandidates
+    .sort(
+      (a, b) =>
+        b.body_tokens * Math.max(1, b.activations) - a.body_tokens * Math.max(1, a.activations) ||
+        b.body_tokens - a.body_tokens
+    )
+    .slice(0, 10);
+
+  const slowestSkills = rows
+    .filter((r) => r.total_duration_seconds > 0)
+    .sort((a, b) => b.total_duration_seconds - a.total_duration_seconds || b.max_duration_seconds - a.max_duration_seconds)
+    .slice(0, 10)
+    .map((r) => ({
+      skill: r.skill,
+      source: r.source,
+      activations: r.activations,
+      avg_duration_seconds: r.avg_duration_seconds,
+      total_duration_seconds: r.total_duration_seconds,
+      max_duration_seconds: r.max_duration_seconds,
+    }));
+
+  const promptPatterns = [...promptMap.values()]
+    .sort((a, b) => b.count - a.count || a.prompt.localeCompare(b.prompt))
+    .slice(0, 10)
+    .map((p) => ({
+      prompt: p.prompt,
+      count: p.count,
+      skills: [...p.skills].sort(),
+    }));
+
+  // Compute duration & token aggregates across sessions
+  let totalDurationSeconds = 0;
+  let longestTaskSeconds = maxSingleDuration;
+  for (const sKey of allSessions) {
+    const expDur = sessionExplicitDur.get(sKey) || 0;
+    let sessDur = expDur;
+    if (sessDur === 0) {
+      const bounds = sessionBounds.get(sKey);
+      if (bounds && bounds.max > bounds.min) {
+        const span = Math.round((bounds.max - bounds.min) / 1000);
+        if (span > 0 && span <= 86400) sessDur = span;
+      }
+    }
+    totalDurationSeconds += sessDur;
+    if (sessDur > longestTaskSeconds) longestTaskSeconds = sessDur;
+  }
+
+  const totalActivations = rows.reduce((acc, r) => acc + r.activations, 0);
+  const totalActiveBodyTokens = rows.reduce((acc, r) => acc + (r.activeLoadTokens || 0), 0);
+  const cacheDenominator = totalInputTokens + totalCacheReadTokens + totalCacheCreationTokens;
+
+  let peakSessionTokens = 0;
+  if (sessionTokensMap.size > 0) {
+    peakSessionTokens = Math.max(...sessionTokensMap.values());
+  } else if (filtered.length > 0) {
+    const perSessionFallback = new Map();
+    for (let idx = 0; idx < filtered.length; idx++) {
+      const ev = filtered[idx];
+      const h = ev.host || 'unknown';
+      const gKey = ev.session_id ? `${h}\0${ev.session_id}` : ev.id || `${h}\0${ev.ts || ''}\0${idx}`;
+      const bt = sessionBodyFallbackMap.get(ev.skill) || 0;
+      perSessionFallback.set(gKey, (perSessionFallback.get(gKey) || 0) + bt);
+    }
+    const maxBodyPerSess = perSessionFallback.size > 0 ? Math.max(...perSessionFallback.values()) : 0;
+    peakSessionTokens = maxBodyPerSess + enabledEstTokens;
+  }
+
   return {
     window: {
       since: since ?? 'all',
@@ -372,7 +564,7 @@ export function aggregateStats({
     },
     totals: {
       events: filtered.length,
-      activations: rows.reduce((acc, r) => acc + r.activations, 0),
+      activations: totalActivations,
       uniqueSkills: rows.length,
       sessions: allSessions.size,
       hosts: hostTotals,
@@ -381,6 +573,25 @@ export function aggregateStats({
       projects: projectTotals,
       manualReads: manualTotal,
       autoReads: autoTotal,
+      tokens: {
+        input: totalInputTokens,
+        output: totalOutputTokens,
+        cacheRead: totalCacheReadTokens,
+        cacheCreation: totalCacheCreationTokens,
+        total: totalRecordedTokens,
+        cacheHitRate: cacheDenominator > 0 ? Number((totalCacheReadTokens / cacheDenominator).toFixed(2)) : 0,
+        activeBodyTokens: totalActiveBodyTokens,
+        lifetimeTokens:
+          totalRecordedTokens > 0
+            ? totalRecordedTokens
+            : totalActiveBodyTokens + enabledEstTokens * (filtered.length > 0 ? Math.max(1, allSessions.size) : 0),
+        peakSessionTokens,
+      },
+      duration: {
+        totalSeconds: totalDurationSeconds,
+        avgSeconds: rows.length > 0 ? Math.round(totalDurationSeconds / Math.max(1, totalActivations)) : 0,
+        longestTaskSeconds,
+      },
     },
     inventory: {
       enabled: enabledSkills.length,
@@ -401,6 +612,9 @@ export function aggregateStats({
       manualOnlySkills,
       projectScopeCandidates,
       highCostSkills,
+      heavyBodySkills,
+      slowestSkills,
+      promptPatterns,
     },
   };
 }

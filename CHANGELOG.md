@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-20
+
+### Added
+- **Runtime Token Usage & Prompt Cache Efficiency Telemetry**: Live hooks (`bin/track.mjs`) and all 4 backfill parsers extract normalized `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, and `total_tokens` from transcripts, exposing `totals.tokens` (`cacheHitRate`, `lifetimeTokens`, `peakSessionTokens`, `activeBodyTokens`).
+- **Skill Task Duration Tracking**: Computes `duration_seconds` across turns in backfill and live hooks, reporting `totals.duration` (`totalSeconds`, `avgSeconds`, `longestTaskSeconds`) and `insights.slowestSkills`.
+- **Heavy `SKILL.md` Body Detection**: Scans full `body_tokens` in `scanInventory` and flags `>= 1,500`-token skill files (`insights.heavyBodySkills`) that should be split into `references/`.
+- **Opt-In Redacted Prompt Triggers (`store_prompts: true`)**: Sanitizes and strips skill tags, secrets, emails, and absolute paths via `sanitizePromptPreview` to surface `insights.promptPatterns`.
+- **Profile Dashboard Updates**: Upgraded the 5-metric pill bar to `Lifetime tokens`, `Peak tokens`, `Longest task`, `Longest streak`, and `Current streak`, plus cache hit rate, active body tokens, automated duration, and heavy-body pruning cards.
+
 ## [1.1.0] - 2026-11-20
 
 ### Added

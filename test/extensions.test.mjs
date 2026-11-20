@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+import { backfillClaude } from '../src/backfill/claude.mjs';
+import { extractUsageMetrics, sanitizePromptPreview } from '../src/core/detect.mjs';
 import { runPrune } from '../src/install/prune.mjs';
 import { scanInventory } from '../src/inventory/scan.mjs';
 import { handleMcpRequest } from '../src/mcp/server.mjs';
@@ -426,6 +428,180 @@ test('MCP server handles initialize, tools/list, tools/call, and stdio framing v
     assert.match(cliRes.stdout, /"serverInfo":\{"name":"skilltally"/);
     assert.match(cliRes.stdout, /\\"from\\": \\"pdf\\"/);
     assert.match(cliRes.stdout, /\\"to\\": \\"clean-code\\"/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('sanitizePromptPreview, extractUsageMetrics, backfillClaude, aggregateStats, and dashboard handle v1.2.0 telemetry', () => {
+  // 1. Prompt sanitization redacts secrets, emails, paths, and skill wrappers
+  const raw =
+    '<SKILL>read and use the "pdf" skill. The path to the skill file is: /Users/alice/.gemini/skills/pdf/SKILL.md</SKILL> ' +
+    'Parse /Users/alice/docs/secret.pdf with sk-ant-api03-secretkey1234567890 for alice@example.com';
+  const clean = sanitizePromptPreview(raw, 120);
+  assert.doesNotMatch(clean, /<SKILL>/);
+  assert.doesNotMatch(clean, /sk-ant-api03/);
+  assert.doesNotMatch(clean, /alice@example\.com/);
+  assert.doesNotMatch(clean, /\/Users\/alice/);
+  assert.match(clean, /\[PATH\]/);
+  assert.match(clean, /\[REDACTED\]/);
+  assert.match(clean, /\[EMAIL\]/);
+
+  // 2. extractUsageMetrics normalizes Claude, Codex, and Gemini payloads
+  assert.deepEqual(
+    extractUsageMetrics({
+      input_tokens: 1200,
+      output_tokens: 400,
+      cache_read_input_tokens: 4800,
+      cache_creation_input_tokens: 200,
+    }),
+    {
+      input_tokens: 1200,
+      output_tokens: 400,
+      cache_read_tokens: 4800,
+      cache_creation_tokens: 200,
+      total_tokens: 6600,
+    }
+  );
+  assert.deepEqual(
+    extractUsageMetrics({
+      input_tokens: 1000,
+      cached_input_tokens: 800,
+      output_tokens: 200,
+      total_tokens: 1200,
+    }),
+    {
+      input_tokens: 1000,
+      output_tokens: 200,
+      cache_read_tokens: 800,
+      cache_creation_tokens: 0,
+      total_tokens: 1200,
+    }
+  );
+  assert.equal(extractUsageMetrics({}), null);
+
+  // 3. Claude backfill extracts usage, duration_seconds, and redacted prompt_preview
+  const tmp = mkdtempSync(join(tmpdir(), 'skilltally-v120-'));
+  const homeDir = join(tmp, 'home');
+  const dataHome = join(tmp, 'data');
+
+  try {
+    const projDir = join(homeDir, '.claude', 'projects', 'demo');
+    mkdirSync(projDir, { recursive: true });
+    const sessionLines = [
+      JSON.stringify({
+        type: 'user',
+        sessionId: 'sess-tok-1',
+        cwd: '/Users/tester/app',
+        timestamp: '2026-11-18T10:00:00.000Z',
+        message: { role: 'user', content: 'Review PR for user@example.com with sk-1234567890abcdef' },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-tok-1',
+        cwd: '/Users/tester/app',
+        timestamp: '2026-11-18T10:00:05.000Z',
+        message: {
+          role: 'assistant',
+          model: 'claude-sonnet-4',
+          usage: {
+            input_tokens: 1000,
+            output_tokens: 500,
+            cache_read_input_tokens: 8500,
+            cache_creation_input_tokens: 500,
+          },
+          content: [{ type: 'tool_use', id: 'tu1', name: 'Skill', input: { skill: 'code-review' } }],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-tok-1',
+        cwd: '/Users/tester/app',
+        timestamp: '2026-11-18T10:02:35.000Z',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Done' }] },
+      }),
+    ].join('\n');
+    writeFileSync(join(projDir, 'sess-tok-1.jsonl'), sessionLines + '\n');
+
+    // Heavy skill body in inventory (>= 1500 body_tokens)
+    const heavySkillDir = join(homeDir, '.claude', 'skills', 'heavy-guide');
+    mkdirSync(heavySkillDir, { recursive: true });
+    writeFileSync(
+      join(heavySkillDir, 'SKILL.md'),
+      '---\nname: heavy-guide\ndescription: Large guide.\n---\n' + 'word '.repeat(1600)
+    );
+
+    const bfOff = backfillClaude({ homeDir, storePrompts: false });
+    assert.equal(bfOff.events.length, 1);
+    assert.equal(bfOff.events[0].prompt_preview, undefined);
+    assert.equal(bfOff.events[0].duration_seconds, 150);
+    assert.equal(bfOff.events[0].cache_read_tokens, 8500);
+    assert.equal(bfOff.events[0].total_tokens, 10500);
+
+    const bfOn = backfillClaude({ homeDir, storePrompts: true });
+    assert.equal(bfOn.events.length, 1);
+    assert.match(bfOn.events[0].prompt_preview, /Review PR for \[EMAIL\] with \[REDACTED\]/);
+
+    // Live hook tail reader with store_prompts=true in SKILLTALLY_HOME/config.json
+    mkdirSync(dataHome, { recursive: true });
+    writeFileSync(join(dataHome, 'config.json'), JSON.stringify({ store_prompts: true }));
+    const hookPayload = JSON.stringify({
+      session_id: 'sess-tok-1',
+      tool_use_id: 'tu_live_1',
+      tool_name: 'Skill',
+      tool_input: { skill: 'heavy-guide' },
+      transcript_path: join(projDir, 'sess-tok-1.jsonl'),
+      cwd: '/Users/tester/app',
+    });
+    const trackRes = spawnSync(process.execPath, [join(root, 'bin', 'track.mjs'), '--host', 'claude'], {
+      input: hookPayload,
+      encoding: 'utf8',
+      env: { ...process.env, SKILLTALLY_HOME: dataHome, HOME: homeDir, USERPROFILE: homeDir },
+    });
+    assert.equal(trackRes.status, 0);
+    const liveEv = JSON.parse(readFileSync(join(dataHome, 'events.jsonl'), 'utf8').trim().split('\n')[0]);
+    assert.equal(liveEv.total_tokens, 10500);
+    assert.match(liveEv.prompt_preview, /Review PR for \[EMAIL\]/);
+
+    // 4. aggregateStats + formatInsights + dashboard rendering
+    const inv = scanInventory({ homeDir, includeProject: false });
+    const heavyEntry = inv.skills.find((s) => s.name === 'heavy-guide');
+    assert.ok(heavyEntry.body_tokens >= 1500);
+
+    const now = new Date('2026-11-20T12:00:00.000Z');
+    const report = aggregateStats({
+      events: [...bfOn.events, liveEv],
+      inventory: inv,
+      since: '30d',
+      now,
+    });
+    assert.equal(report.totals.tokens.total, 21000);
+    assert.equal(report.totals.tokens.cacheHitRate, 0.85);
+    assert.equal(report.totals.tokens.lifetimeTokens, 21000);
+    assert.equal(report.totals.tokens.peakSessionTokens, 21000);
+    assert.ok(report.totals.duration.longestTaskSeconds >= 150);
+    assert.equal(report.insights.heavyBodySkills.length, 1);
+    assert.equal(report.insights.heavyBodySkills[0].skill, 'heavy-guide');
+    assert.equal(report.insights.slowestSkills[0].skill, 'code-review');
+    assert.equal(report.insights.promptPatterns.length, 1);
+
+    const insightsTxt = formatInsights(report);
+    assert.match(insightsTxt, /Token Telemetry & Heavy SKILL\.md Bodies/);
+    assert.match(insightsTxt, /cache hit: 85%/);
+    assert.match(insightsTxt, /Skill Execution Duration/);
+    assert.match(insightsTxt, /Common Prompt Triggers/);
+
+    const timeline = buildTimeline({ events: bfOn.events, inventory: inv, by: 'day', since: '30d', now });
+    const chains = buildChains({ events: bfOn.events, inventory: inv, since: '30d', now });
+    const html = generateDashboardHtml({ stats: report, timeline, dailyTimeline: timeline, chains, inventory: inv });
+    assert.match(html, /Lifetime tokens/);
+    assert.match(html, /Peak tokens/);
+    assert.match(html, /Longest task/);
+    assert.match(html, /Longest streak/);
+    assert.match(html, /Current streak/);
+    const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+    assert.ok(scriptMatch);
+    assert.doesNotThrow(() => new vm.Script(scriptMatch[1]));
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

@@ -116,7 +116,7 @@ export function generateDashboardHtml({
   .brand-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
   .top-links { display: flex; align-items: center; gap: 16px; }
 
-  /* Text link buttons (OpenAI profile switcher pattern) */
+  /* Text link buttons (profile switcher pattern) */
   .text-tab {
     background: none; border: none; padding: 0; margin: 0;
     font: inherit; font-size: 13px; font-weight: 400;
@@ -459,10 +459,24 @@ export function generateDashboardHtml({
   };
   const fmtCompact = (n) => {
     const v = Number(n || 0);
+    if (v >= 1_000_000_000) return (v / 1_000_000_000).toFixed(1).replace(/\\.0$/, '') + 'B';
     if (v >= 1_000_000) return (v / 1_000_000).toFixed(1).replace(/\\.0$/, '') + 'M';
-    if (v >= 10_000) return (v / 1_000).toFixed(1).replace(/\\.0$/, '') + 'K';
     if (v >= 1_000) return (v / 1_000).toFixed(1).replace(/\\.0$/, '') + 'K';
     return String(v);
+  };
+  const fmtDuration = (seconds) => {
+    const sec = Number(seconds || 0);
+    if (!Number.isFinite(sec) || sec <= 0) return '0s';
+    const rounded = Math.round(sec);
+    if (rounded < 60) return rounded + 's';
+    if (rounded < 3600) {
+      const m = Math.floor(rounded / 60);
+      const s = rounded % 60;
+      return s > 0 ? m + 'm ' + s + 's' : m + 'm';
+    }
+    const h = Math.floor(rounded / 3600);
+    const m = Math.floor((rounded % 3600) / 60);
+    return m > 0 ? h + 'h ' + m + 'm' : h + 'h';
   };
 
   const tooltip = document.getElementById('tooltip');
@@ -539,18 +553,20 @@ export function generateDashboardHtml({
     }
   }
 
-  // 1. 5-Metric Pill Strip
+  // 1. 5-Metric Pill Strip (Profile layout)
   const totals = stats.totals || {};
   const inv = stats.inventory || {};
   const unused = stats.unused || {};
+  const tokStats = totals.tokens || {};
+  const durStats = totals.duration || {};
   const enabledTok = inv.enabledEstTokens || 0;
   const unusedTok = unused.totalEstTokens || 0;
   const wastePct = enabledTok > 0 ? Math.round((unusedTok / enabledTok) * 100) : 0;
 
   document.getElementById('kpi-strip').innerHTML = [
-    { val: fmtCompact(totals.events || 0), lbl: 'Total reads' },
-    { val: fmtCompact(totals.activations || 0), lbl: 'Activations' },
-    { val: '~' + fmtCompact(unusedTok), lbl: 'Unused tok/sess' },
+    { val: fmtCompact(tokStats.lifetimeTokens || 0), lbl: 'Lifetime tokens' },
+    { val: fmtCompact(tokStats.peakSessionTokens || 0), lbl: 'Peak tokens' },
+    { val: fmtDuration(durStats.longestTaskSeconds || 0), lbl: 'Longest task' },
     { val: longestStreak + (longestStreak === 1 ? ' day' : ' days'), lbl: 'Longest streak' },
     { val: currentStreak + (currentStreak === 1 ? ' day' : ' days'), lbl: 'Current streak' }
   ].map((k) => \`
@@ -957,8 +973,16 @@ export function generateDashboardHtml({
     const ins = stats.insights || {};
     const projCands = ins.projectScopeCandidates || [];
     const manualOnly = ins.manualOnlySkills || [];
+    const heavyBodies = ins.heavyBodySkills || [];
+    const slowestSkills = ins.slowestSkills || [];
+    const promptPatterns = ins.promptPatterns || [];
+    const cachePct = tokStats.total > 0 ? Math.round((tokStats.cacheHitRate || 0) * 100) + '%' : '—';
 
     const overviewRows = [
+      ['Prompt cache hit rate', cachePct],
+      ['Active skill body tokens', '~' + fmtCompact(tokStats.activeBodyTokens || 0) + ' tok loaded'],
+      ['Total time automated', fmtDuration(durStats.totalSeconds || 0)],
+      ['Heavy SKILL.md bodies', heavyBodies.length + (heavyBodies.length === 1 ? ' skill' : ' skills')],
       ['Auto-discovery rate', autoPct + '% of runs'],
       ['Most active host', topHost ? \`\${topHost.name} · \${topHost.pct}%\` : '—'],
       ['Most used model', topModel ? \`\${topModel.name} · \${topModel.pct}%\` : '—'],
@@ -967,6 +991,7 @@ export function generateDashboardHtml({
       ['Single-project global skills', projCands.length + (projCands.length === 1 ? ' candidate' : ' candidates')],
       ['Manual-only skills', String(manualOnly.length)],
       ['Skills explored', String(inv.used || 0)],
+      ['Total skills used', String(totals.events || 0)],
       ['Total skills installed', String(inv.enabled || 0)],
     ];
 
@@ -1056,6 +1081,39 @@ export function generateDashboardHtml({
             <div class="rec-sub">Move from \${esc(c.source)} to repo-local skills</div>
           </div>
           <span class="brand-meta">~\${c.est_tokens} tok</span>
+        </div>
+      \`);
+    }
+    for (const h of heavyBodies.slice(0, 5)) {
+      pruneRows.push(\`
+        <div class="rec-row">
+          <div>
+            <div><strong>\${esc(h.skill)}</strong> · heavy SKILL.md body</div>
+            <div class="rec-sub">Split ~\${h.body_tokens.toLocaleString()} tok into references/ (\${h.activations} act)</div>
+          </div>
+          <span class="brand-meta">~\${h.body_tokens.toLocaleString()} tok/read</span>
+        </div>
+      \`);
+    }
+    for (const s of slowestSkills.slice(0, 5)) {
+      pruneRows.push(\`
+        <div class="rec-row">
+          <div>
+            <div><strong>\${esc(s.skill)}</strong> · longest/slowest task</div>
+            <div class="rec-sub">Avg \${fmtDuration(s.avg_duration_seconds)} across \${s.activations} activation(s)</div>
+          </div>
+          <span class="brand-meta">\${fmtDuration(s.total_duration_seconds)} total</span>
+        </div>
+      \`);
+    }
+    for (const p of promptPatterns.slice(0, 5)) {
+      pruneRows.push(\`
+        <div class="rec-row">
+          <div>
+            <div><strong>"\${esc(p.prompt)}"</strong></div>
+            <div class="rec-sub">Triggered: \${esc(p.skills.join(', '))}</div>
+          </div>
+          <span class="brand-meta">\${p.count}x</span>
         </div>
       \`);
     }
